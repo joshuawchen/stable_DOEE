@@ -155,13 +155,43 @@ def to_spec(cache, *, mode=None, enforce="monotone", sigma_floor=1.0e-3,
 
     Returns (spec, nfixed). nfixed is how many log slopes had to be projected to
     satisfy unimodality; a large value means the estimate is too noisy to use
-    as-is."""
+    as-is.
+
+    CONVENTION TRANSLATION. The C++ NonGaussianDensity treats stable min and
+    stable max as bin EDGES and requires exactly (max-min)/dx log slopes. The
+    estimator caches (stable_doee.finalize_pdf_cache and
+    stable_doee_reg._make_cache) instead store the FIRST AND LAST GRID POINT
+    of the kept interior -- bin centres -- so their extent is (n-1)*dx for n
+    slopes, and the C++ rejected the first estimated density to reach it with
+    "log slopes has 34 entries but the grid implies 33 bins" (the hand-written
+    test configurations had always obeyed the edge convention). Both
+    conventions are accepted here and detected from the extent: (n-1)*dx is
+    padded by half a bin per side, which also makes _centres reconstruct the
+    original grid points exactly, removing a half-bin shift the mode and
+    sigma fits carried for estimator caches; n*dx is kept as-is. Either way
+    the upper edge is rebuilt as lo + n*dx so the count identity holds in the
+    exported floats, not just mathematically, and any other extent is
+    refused."""
     for k in REQUIRED:
         if k not in cache:
             raise KeyError(f"cache missing '{k}' (did you run finalize_pdf_cache?)")
     if cache["left_dd"] > 0 or cache["right_dd"] > 0:
         raise ValueError("tail curvatures must be <= 0; the density would grow "
                          "without bound")
+
+    dxv = float(cache["dx"])
+    nsl = len(cache["slopes_log"])
+    nb = (float(cache["stable_max"]) - float(cache["stable_min"])) / dxv
+    if abs(nb - (nsl - 1)) < 1e-6:        # grid-point (bin centre) convention
+        lo = float(cache["stable_min"]) - 0.5 * dxv
+    elif abs(nb - nsl) < 1e-6:            # already the edge convention
+        lo = float(cache["stable_min"])
+    else:
+        raise ValueError(f"cache is inconsistent: {nsl} log slopes over an "
+                         f"extent of {nb:.6f} bins; expected {nsl} (edges) "
+                         f"or {nsl - 1} (grid points)")
+    hi = lo + nsl * dxv
+    cache = {**cache, "stable_min": lo, "stable_max": hi}
 
     m = find_mode(cache) if mode is None else float(mode)
     c = _centres(cache)
@@ -218,12 +248,19 @@ def to_yaml(spec, indent=8, per_line=6):
 
 def check(spec, dmax=None, n=2001):
     """Cross-check: the exported block must give a finite positive effective
-    variance everywhere, using the same logic as the C++ evaluator. Returns a
-    list of offending (d, variance) pairs, empty if the density is usable."""
+    variance everywhere, using the same logic as the C++ evaluator, and must
+    satisfy the count identity the C++ enforces on load,
+    len(log slopes) == (stable max - stable min)/grid spacing. Returns a list
+    of offending entries, empty if the density is usable."""
+    bad = []
+    nb = (spec["stable max"] - spec["stable min"]) / spec["grid spacing"]
+    nsl = len(spec["log slopes"])
+    if abs(nb - round(nb)) > 1e-6 or int(round(nb)) != nsl:
+        bad.append(("bin count", f"{nsl} log slopes but the grid implies "
+                                 f"{nb:.6f} bins; the C++ will reject this"))
     f = Density(spec)
     hi = dmax if dmax is not None else 3.0 * (spec["stable max"] - spec["mode"]) + 1.0
     lo = -3.0 * (spec["mode"] - spec["stable min"]) - 1.0
-    bad = []
     for d in np.linspace(lo, hi, n):
         v = f.variance(float(d))
         if not (v > 0) or not np.isfinite(v):

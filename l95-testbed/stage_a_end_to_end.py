@@ -100,7 +100,7 @@ background error:
   covariance model: L95Error
   date: 2010-01-01T00:00:00Z
   length_scale: 1.0
-  standard_deviation: 0.6
+  standard_deviation: {pert_sd}
 forecast length: PT27H
 initial condition:
   date: 2010-01-01T00:00:00Z
@@ -379,6 +379,13 @@ def main():
     ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--members", type=int, default=20)
+    ap.add_argument("--pert-sd", type=float, default=0.6,
+                    help="real mode: genenspert initial perturbation standard "
+                         "deviation. The initial spread grows through 27h of "
+                         "l95 dynamics, so what matters is the reliability "
+                         "ratio the run reports; at the stock 0.6 the first "
+                         "measurement gave 2.27 (over-dispersive by more than "
+                         "a factor of two)")
     ap.add_argument("--assumed-error", type=float, default=0.4)
     ap.add_argument("--n-obs", type=int, default=2000,
                     help="synthetic mode only; real mode takes what "
@@ -466,7 +473,7 @@ def main():
             rep.info("reusing the existing testbed ensemble")
         else:
             (cfgdir / "testbed_genenspert.yaml").write_text(
-                GENENSPERT_TPL.format(members=a.members))
+                GENENSPERT_TPL.format(members=a.members, pert_sd=a.pert_sd))
             if not run_bin(rep, bindir, "l95_genpert.x",
                            "testinput/testbed_genenspert.yaml",
                            testdir, logdir, "genenspert"):
@@ -519,25 +526,37 @@ def main():
                 f"recovered width within 25% of the injected one "
                 f"({100 * (sd / spec_inj['sample_sigma'] - 1):+.1f}%)")
 
+    rep.verdict(cache["resolvability"] >= 0.7,
+                f"resolvability {cache['resolvability']:.2f} should reach "
+                "0.7 for the density shape to be usable (below that, "
+                "variance only)")
+
     # ---- 6. the null floor at this configuration ---------------------------
     rep.head(f"null floor at the measured configuration "
              f"({a.floor_trials} trials)")
     sigma_b_est = float(np.sqrt(np.mean(np.var(hofx, axis=1, ddof=1))))
     sigma_o_est = float(cache["resolvability"] * sigma_b_est)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        floor = NC.null_floor(sigma_o_est, sigma_b_est, len(obs),
-                              hofx.shape[1], trials=a.floor_trials)
-    rep.info(f"sigma_o~{sigma_o_est:.3f} sigma_b~{sigma_b_est:.3f}  floor "
-             f"mean {floor['kurtosis_mean']:+.2f}  p95 "
-             f"{floor['kurtosis_p95']:+.2f}")
-    rep.info("verdict on the recovered tail: " + NC.verdict(ku, floor))
-    if inj["kind"] != "gaussian":
-        rep.verdict(ku > floor["kurtosis_p95"],
-                    "a non-Gaussian injection should clear the floor")
+    if cache["resolvability"] < 0.05:
+        rep.info("skipped: the innovation histogram is no wider than the "
+                 "kernel (resolvability ~0), so there is no recoverable "
+                 "observation error to calibrate a floor for; the ensemble "
+                 "spread has swallowed the signal")
+        floor = None
     else:
-        rep.verdict(ku <= floor["kurtosis_p95"],
-                    "a Gaussian injection should sit under the floor")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            floor = NC.null_floor(sigma_o_est, sigma_b_est, len(obs),
+                                  hofx.shape[1], trials=a.floor_trials)
+        rep.info(f"sigma_o~{sigma_o_est:.3f} sigma_b~{sigma_b_est:.3f}  floor "
+                 f"mean {floor['kurtosis_mean']:+.2f}  p95 "
+                 f"{floor['kurtosis_p95']:+.2f}")
+        rep.info("verdict on the recovered tail: " + NC.verdict(ku, floor))
+        if inj["kind"] != "gaussian":
+            rep.verdict(ku > floor["kurtosis_p95"],
+                        "a non-Gaussian injection should clear the floor")
+        else:
+            rep.verdict(ku <= floor["kurtosis_p95"],
+                        "a Gaussian injection should sit under the floor")
 
     # ---- 7. export ---------------------------------------------------------
     rep.head("export to the `non gaussian cost` block")
