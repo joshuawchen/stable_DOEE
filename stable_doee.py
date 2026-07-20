@@ -4,7 +4,7 @@ Recovers a non-parametric observation-error density from ensemble innovations,
 following Hu, van Leeuwen & Geer (2024, QJRMS), by matching the innovation
 histogram to the convolution of the estimated noise with the empirical
 difference histogram, and solving a nonnegative, mass-constrained,
-smoothness-regularised quadratic programme.
+smoothness-regularized quadratic program.
 
 This module is the source of truth for the estimator; the notebook imports from
 here.
@@ -12,7 +12,7 @@ here.
 Beyond the published method this implementation adds numerical stability: a
 trimmed interior on which the log density is piecewise linear, quadratic-log
 tails with curvature forced negative so the density stays integrable, and
-smoothness regularisation on the first differences of the estimate.
+smoothness regularization on the first differences of the estimate.
 
 Requires numpy and quadprog.
 """

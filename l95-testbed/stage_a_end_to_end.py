@@ -4,7 +4,7 @@
     inject a known error density into l95 observations
     -> genenspert background ensemble, one first-guess pass per member
     -> collect member H(x), check ensemble reliability against the truth
-    -> DOEE (third-difference regularised), compare against the injected density
+    -> DOEE (third-difference regularized), compare against the injected density
     -> null floor at the measured configuration
     -> export to the `non gaussian cost` block, check(spec) as the C++ will
     -> run a Gaussian control and an evolving-Gaussian treatment 3D-Var
@@ -51,7 +51,7 @@ predictive density at the NOISE-FREE observable -- the injected density as the
 loss on analysis error, reported as regret in nats per observation below a
 perfect analysis. This is an OSSE, so the metric can be chosen from the truth
 rather than from either competitor's assumption; RMSE is the loss the Gaussian
-control itself optimises, so it is reported alongside MAE but decides nothing.
+control itself optimizes, so it is reported alongside MAE but decides nothing.
 Scoring against the noisy observations would be worse still: the analysis is
 correlated with the draws it assimilated, and fits are not verification.
 
@@ -111,6 +111,37 @@ output:
   exp: testbed
   frequency: PT1H30M
   type: ens
+"""
+
+MAKEOBS_TPL = """\
+# testbed observation generation: H(truth) with no noise, at a configurable
+# density. l95 interpolates the observation operator, so obs_density may
+# exceed the 40 gridpoints. The ObsError column carries the assumed error.
+geometry:
+  resol: 40
+model:
+  f: 8.0
+  name: L95
+  tstep: PT1H30M
+initial condition:
+  date: 2010-01-01T21:00:00Z
+  filename: Data/truth.fc.2010-01-01T00:00:00Z.PT21H.l95
+forecast length: PT6H
+
+time window:
+  begin: 2010-01-01T21:00:00Z
+  length: PT4H30M
+observations:
+  observers:
+  - obs operator: {{}}
+    obs space:
+      generate:
+        obs_density: {obs_density}
+        obs_error: {obs_error}
+        obs_frequency: PT1H30M
+      obsdataout:
+        obsfile: Data/testbed_truth3d.obt
+make obs: true
 """
 
 MEMBER_TPL = """\
@@ -388,8 +419,14 @@ def main():
                          "a factor of two)")
     ap.add_argument("--assumed-error", type=float, default=0.4)
     ap.add_argument("--n-obs", type=int, default=2000,
-                    help="synthetic mode only; real mode takes what "
-                         "makeobs3d generated")
+                    help="synthetic mode only; real mode is set by "
+                         "--obs-density")
+    ap.add_argument("--obs-density", type=int, default=40,
+                    help="real mode: observation locations per observation "
+                         "time (3 times in the window, so n_obs = 3x this). "
+                         "l95 interpolates, so this may exceed the 40 "
+                         "gridpoints; raise it together with --members to "
+                         "scale the innovation sample")
     ap.add_argument("--sigma-b", type=float, default=0.5,
                     help="synthetic mode only")
     ap.add_argument("--floor-trials", type=int, default=6)
@@ -443,7 +480,17 @@ def main():
                 rep.info(f"{artifact} present")
             elif not run_bin(rep, bindir, exe, cfg, testdir, logdir, tag):
                 return rep.finish()
-        truth_obt = data / "truth3d.2010-01-02T00:00:00Z.obt"
+        # the testbed generates its own truth observations so the density is
+        # a knob; the stock truth3d stays untouched for the ctest suite and
+        # for --check-gaussian-diag
+        (cfgdir / "testbed_makeobs.yaml").write_text(
+            MAKEOBS_TPL.format(obs_density=a.obs_density,
+                               obs_error=a.assumed_error))
+        if not run_bin(rep, bindir, "l95_hofx.x",
+                       "testinput/testbed_makeobs.yaml", testdir, logdir,
+                       "makeobs"):
+            return rep.finish()
+        truth_obt = data / "testbed_truth3d.obt"
         members = None
     else:
         members = synthesize(data, a.n_obs, a.members, a.sigma_b,
@@ -502,7 +549,7 @@ def main():
     rep.info(f"reliability ratio {rel['ratio']:.2f}  ({rel['note']})")
 
     # ---- 5. estimate the density -------------------------------------------
-    rep.head("DOEE, third-difference regularised, lambda by cross-validation")
+    rep.head("DOEE, third-difference regularized, lambda by cross-validation")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         grid, f_d, f_k, innov = R.histograms_from_ensemble(obs, hofx,
@@ -631,7 +678,7 @@ def main():
     ctl = CE.read_obt(str(data / "testbed_control.obt"))
     # The verdict metric is chosen from the TRUTH, not from either
     # competitor's assumption. RMSE is the loss the Gaussian control itself
-    # optimises, so deciding by RMSE hands the control home advantage; this
+    # optimizes, so deciding by RMSE hands the control home advantage; this
     # is an OSSE, the injected density is known exactly, so the analysis is
     # scored by the log score of its implied predictive density at the
     # NOISE-FREE observable: mean log f_true(H(truth) - H(x_a)). Scoring

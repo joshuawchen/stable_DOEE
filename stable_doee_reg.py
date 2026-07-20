@@ -1,4 +1,4 @@
-"""Regularised variant of the DOEE estimator.
+"""Regularized variant of the DOEE estimator.
 
 Same deconvolution as `estimate_noise_pmf` in stable_doee: match the innovation
 histogram to the convolution of the noise density with the empirical difference
@@ -7,16 +7,16 @@ histogram, subject to non-negativity and unit mass. Three changes.
 1. PENALTY ON THE THIRD DIFFERENCE OF log pi, not on differences of pi.
 
    The penalty is sum_i w_i [(L pi)_i]^2 with L the THIRD difference and
-   w_i ~ 1/pihat^2 refreshed each solve, which penalises pi'''/pi, the
+   w_i ~ 1/pihat^2 refreshed each solve, which penalizes pi'''/pi, the
    leading term of d^3 log pi / dx^3. It is scale free in pi, so it keeps
    acting in the tails, and its null space contains every log-quadratic
    density: a Gaussian costs nothing, and so does an exponential tail.
 
    That last property is the point, and it was learned in two steps. The
-   original penalises differences of pi, which prefers flat compact
+   original penalizes differences of pi, which prefers flat compact
    densities: measured against known truths it returns an excess kurtosis
    near -0.6 for every case tried, including truths at +7 and +22. The first
-   regularised variant penalised the SECOND difference of log pi, which
+   regularized variant penalized the SECOND difference of log pi, which
    vanishes on log-linear (exponential) tails but charges -1/sigma^2 per bin
    on Gaussian ones: on a Gaussian truth with exact analytic histograms its
    kurtosis bias grew monotonically with lambda, +0.3 at 1e-4 to +14.5 at
@@ -53,7 +53,7 @@ histogram, subject to non-negativity and unit mass. Three changes.
 Measured against the original on 8000 observations, 20 members, three seeds per
 case, scoring L1 distance to the true density (third-difference penalty):
 
-    case            original   regularised   resolvability   chosen lambda
+    case            original   regularized   resolvability   chosen lambda
     gaussian 1.0      0.095       0.099          1.00             1e+01
     heavy 85/15       0.341       0.186          1.02             1e+01
     laplace 0.8       0.302       0.174          1.15             1e+02
@@ -234,7 +234,7 @@ def estimate_from_histograms(grid, f_d, f_k, lam=None, lam_grid=None,
     the argmax is then a noise tilt that lands on the spiky end of the grid.
     lam_flat's default 1e-1 is the value null_calibration measures the
     artifact floor at, so the estimate and the floor it is judged against
-    stay one instrument. When the data genuinely favour another lambda by
+    stay one instrument. When the data genuinely favor another lambda by
     more than one standard error, the data win: the argmax is taken where the
     deconvolution is well posed, the one-standard-error fallback where it is
     not.
@@ -281,7 +281,7 @@ def estimate_from_histograms(grid, f_d, f_k, lam=None, lam_grid=None,
             # lam_flat's default 1e-1 is the value null_calibration measures
             # the artifact floor at, so the estimate and the floor it is
             # judged against stay one instrument. When the data genuinely
-            # favour another lambda by more than one standard error, the data
+            # favor another lambda by more than one standard error, the data
             # win: argmax where the deconvolution is well posed, the
             # one-standard-error fallback where it is not.
             i_flat = int(np.argmin(np.abs(np.log10(np.asarray(lam_grid))
@@ -346,7 +346,7 @@ def _solve(Eta, f_d, dx, n, lam, n_irls=3, floor=1e-6, ridge=1e-10):
         w_i = (pihat_i pihat_i+1 pihat_i+2 pihat_i+3)^(-1/2)
 
     with L the THIRD difference and the weights refreshed from the previous
-    solve. This penalises pi''' / pi, the leading term of
+    solve. This penalizes pi''' / pi, the leading term of
 
         d^3 log pi / dx^3 = pi'''/pi - 3 (pi''/pi)(pi'/pi) + 2 (pi'/pi)^3
 
@@ -355,18 +355,18 @@ def _solve(Eta, f_d, dx, n, lam, n_irls=3, floor=1e-6, ridge=1e-10):
     log-QUADRATIC density. That is the point of the third difference: the
     second-difference version of this penalty vanishes on log-linear
     (exponential) tails but charges -1/sigma^2 per bin on Gaussian ones, so
-    minimising it pushed every recovery toward exponential tails -- measured on
+    minimizing it pushed every recovery toward exponential tails -- measured on
     a Gaussian truth with exact analytic histograms its excess-kurtosis bias
     grew monotonically with lambda (+0.3 at 1e-4 up to +14.5 at 1e0), the
     signature of a prior rather than a numerical artifact. The third difference
     vanishes for log-quadratic AND log-linear tails, so it privileges neither:
     same exact-histogram test, +1.0 at lambda 1e-2, +0.8 at 1e-1, +1.0 at 1e0,
     while still detecting a genuine heavy tail. It degrades below about
-    lambda = 1e-3 (under-regularised and spiky), which the cross-validation
+    lambda = 1e-3 (under-regularized and spiky), which the cross-validation
     grid respects by starting at 1e-3.
 
     The dropped lower-order terms make this an approximation to the third
-    derivative of log pi rather than that derivative exactly. Linearising
+    derivative of log pi rather than that derivative exactly. Linearizing
     log pi about the previous iterate gives the exact quadratic form, but
     diag(1/pihat) then carries entries as large as 1/floor and the constant
     term carries log(pihat), and the resulting QP is ill conditioned: tested
@@ -390,7 +390,7 @@ def _solve(Eta, f_d, dx, n, lam, n_irls=3, floor=1e-6, ridge=1e-10):
         # weight itself is smooth
         wr = np.exp(np.log(w[:-3] * w[1:-2] * w[2:-1] * w[3:]) / 4.0)
         H = H_data + 2.0 * lam * (L.T @ (wr[:, None] * L)) + ridge * np.eye(n)
-        H = 0.5 * (H + H.T)                    # symmetrise for quadprog
+        H = 0.5 * (H + H.T)                    # symmetrize for quadprog
         ev = np.linalg.eigvalsh(H)
         if ev[0] <= 0:
             H += (abs(ev[0]) + 1e-8) * np.eye(n)
@@ -407,9 +407,9 @@ def _cv_fold_scores(Eta, dx, n, x_min, x_max, innov, lam, folds=4, seed=0,
     groups assigns each innovation sample to an observation. When innovations
     are stacked over ensemble members, every observation's error draw appears
     in K samples; random folds then place the same draw on both sides of the
-    split, and the criterion rewards a spiky fit that memorises the draws.
+    split, and the criterion rewards a spiky fit that memorizes the draws.
     Grouped folds keep all of an observation's samples in one fold, so the
-    held-out likelihood measures generalisation to unseen observations."""
+    held-out likelihood measures generalization to unseen observations."""
     rng = np.random.default_rng(seed)
     if groups is None:
         idx = rng.permutation(len(innov))
@@ -448,7 +448,7 @@ def resolvability(X, Y, n_members):
 
     Below about 0.5 the deconvolution is ill posed and the recovered shape
     should not be trusted, whichever estimator is used: no amount of data or
-    regularisation resolves a narrow density from a much wider kernel.
+    regularization resolves a narrow density from a much wider kernel.
     """
     if n_members < 2:
         raise ValueError("need at least two members to estimate the spread")
@@ -463,7 +463,7 @@ def estimate_noise_pmf_reg(X, Y, n_members, lam=None, lam_grid=None, folds=4,
                            n_irls=3, p_lo=1, p_hi=99, pad_frac=0.05,
                            trim_log=-30.0, seed=0, verbose=False,
                            well_posed=0.7):
-    """Regularised DOEE. Returns (x_grid, pi_N, cache) like the original, with
+    """Regularized DOEE. Returns (x_grid, pi_N, cache) like the original, with
     'lambda' and 'resolvability' added to the cache.
 
     X   : ensemble perturbations   H(x_k) - H(x_bar), stacked over members

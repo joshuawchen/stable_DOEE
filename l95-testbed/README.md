@@ -134,7 +134,7 @@ same location is both correct and well conditioned, and converges: 0.474 at
 truth to within about one unit.
 
 The error was only visible because Stage A makes the truth EXCHANGEABLE with
-the members rather than their centre. An earlier check with members centred on
+the members rather than their center. An earlier check with members centered on
 the truth appeared to validate the wrong feed, because member - truth then has
 variance sigma_b^2 instead of 2 sigma_b^2 and the mistake cancels.
 
@@ -165,7 +165,7 @@ weight that is not in the data, and a recovered excess kurtosis means
 something only if it exceeds what the same estimator returns on GAUSSIAN data
 at the same configuration. `null_calibration.py` measures that floor.
 
-The floor turned out to be mostly the regulariser, not the deconvolution.
+The floor turned out to be mostly the regularizer, not the deconvolution.
 Under the second-difference log penalty it sat near +4 at
 sigma_o/sigma_b = 0.8 and +29 at 0.5, did not fall with more data, and a
 Laplace error (true +3) could not clear it: Stage A reported +4.5 for Laplace

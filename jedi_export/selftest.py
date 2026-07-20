@@ -58,7 +58,7 @@ spec, nf = D.to_spec(cache, enforce="monotone")
 check("monotone repairs exactly the bad bins", nf == 2)
 check("repaired density valid everywhere", not D.check(spec))
 sl = np.asarray(spec["log slopes"])
-cc = D._centres(cache)
+cc = D._centers(cache)
 check("repaired density is unimodal",
       not ((((cc < spec["mode"]) & (sl < 0))
             | ((cc > spec["mode"]) & (sl > 0))).any()))

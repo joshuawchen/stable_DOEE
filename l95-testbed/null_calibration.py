@@ -13,7 +13,7 @@ has to be computed per stratum rather than taken from a table.
     if recovered_kurtosis > floor["kurtosis_p95"]:
         ... the tail is supported at this configuration
 
-The floor is also a measurement of the regulariser, which the second-difference
+The floor is also a measurement of the regularizer, which the second-difference
 log penalty demonstrated: its floor sat near +4 at sigma_o/sigma_b = 0.8 and
 +29 at 0.5, did not fall with more observations or members (2.5 times the data
 moved it slightly UP), and was insensitive to lambda and bin count -- the

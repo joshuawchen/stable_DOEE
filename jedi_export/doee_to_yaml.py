@@ -9,17 +9,17 @@ needed, because the cost function uses the score
     g(d) = d/dd[-log f](d)
 and the effective variance of Hu, Geer & van Leeuwen (2025) Eq. 9
     sigma_o^2(d) = (d - m) / g(d).
-Normalisation and intercepts do not enter, so logZ is not exported.
+Normalization and intercepts do not enter, so logZ is not exported.
 
 Three things this does that a naive dump would not:
 
-1. MODE. Eq. 9 is 0/0 at the mode and the surrogate Gaussian is centred there,
+1. MODE. Eq. 9 is 0/0 at the mode and the surrogate Gaussian is centered there,
    so the mode must be identified, not assumed to be zero. Taken as the argmax
    of the reconstructed log density.
 
 2. SIGMA AT MODE. From the paper's Appendix A: fit a quadratic in a window
    about the mode and take sigma = sqrt(1/(2 p2)). This is the value used
-   inside the mode neighbourhood, where Eq. 9 is unusable.
+   inside the mode neighborhood, where Eq. 9 is unusable.
 
 3. UNIMODALITY. The cost function REJECTS a density whose log slope is
    negative below the mode or positive above it, because the effective variance
@@ -75,7 +75,7 @@ class Density:
 
 
 # --------------------------------------------------------------------------
-def _centres(cache):
+def _centers(cache):
     n = len(cache["slopes_log"])
     return cache["stable_min"] + (np.arange(n) + 0.5) * cache["dx"]
 
@@ -89,7 +89,7 @@ def find_mode(cache):
     of the cumulative slope integral is insensitive to isolated bad bins.
     Refined by interpolating the slope zero crossing around the argmax."""
     s = np.asarray(cache["slopes_log"], float)
-    c = _centres(cache)
+    c = _centers(cache)
     if s.size < 3:
         raise ValueError("need at least three interior bins to locate a mode")
     logf = np.concatenate([[0.0], np.cumsum(s[:-1] * np.diff(c))])
@@ -106,7 +106,7 @@ def sigma_at_mode(cache, mode, window=None):
     """Paper Appendix A: quadratic fit p2 (x-mode)^2 + p0 to -log f near the
     mode; sigma = sqrt(1/(2 p2)). Reconstructs -log f from the slopes, since
     the intercepts are not needed elsewhere."""
-    c = _centres(cache)
+    c = _centers(cache)
     s = np.asarray(cache["slopes_log"], float)
     window = window if window is not None else 3.0 * cache["dx"]
     sel = np.abs(c - mode) <= window
@@ -127,18 +127,18 @@ def sigma_at_mode(cache, mode, window=None):
     return float(np.sqrt(1.0 / (2.0 * p2)))
 
 
-def enforce_unimodal(slopes, centres, mode, how="monotone"):
+def enforce_unimodal(slopes, centers, mode, how="monotone"):
     """The cost function requires slope > 0 below the mode and < 0 above it.
     A noisy estimate can violate this where samples are few."""
     s = np.asarray(slopes, float).copy()
-    bad = ((centres < mode) & (s < 0)) | ((centres > mode) & (s > 0))
+    bad = ((centers < mode) & (s < 0)) | ((centers > mode) & (s > 0))
     if not bad.any():
         return s, 0
     if how == "strict":
         raise ValueError(f"{bad.sum()} log slopes violate unimodality about "
                          f"mode={mode:.4g}; pass enforce='monotone' to project them")
     # project onto the nearest sign-correct value: clear the bad entries, then
-    # adopt the neighbouring valid slope so the score does not vanish (which
+    # adopt the neighboring valid slope so the score does not vanish (which
     # would make Eq. 9 undefined).
     s[bad] = 0.0
     for i in np.where(bad)[0]:
@@ -161,12 +161,12 @@ def to_spec(cache, *, mode=None, enforce="monotone", sigma_floor=1.0e-3,
     stable max as bin EDGES and requires exactly (max-min)/dx log slopes. The
     estimator caches (stable_doee.finalize_pdf_cache and
     stable_doee_reg._make_cache) instead store the FIRST AND LAST GRID POINT
-    of the kept interior -- bin centres -- so their extent is (n-1)*dx for n
+    of the kept interior -- bin centers -- so their extent is (n-1)*dx for n
     slopes, and the C++ rejected the first estimated density to reach it with
     "log slopes has 34 entries but the grid implies 33 bins" (the hand-written
     test configurations had always obeyed the edge convention). Both
     conventions are accepted here and detected from the extent: (n-1)*dx is
-    padded by half a bin per side, which also makes _centres reconstruct the
+    padded by half a bin per side, which also makes _centers reconstruct the
     original grid points exactly, removing a half-bin shift the mode and
     sigma fits carried for estimator caches; n*dx is kept as-is. Either way
     the upper edge is rebuilt as lo + n*dx so the count identity holds in the
@@ -182,7 +182,7 @@ def to_spec(cache, *, mode=None, enforce="monotone", sigma_floor=1.0e-3,
     dxv = float(cache["dx"])
     nsl = len(cache["slopes_log"])
     nb = (float(cache["stable_max"]) - float(cache["stable_min"])) / dxv
-    if abs(nb - (nsl - 1)) < 1e-6:        # grid-point (bin centre) convention
+    if abs(nb - (nsl - 1)) < 1e-6:        # grid-point (bin center) convention
         lo = float(cache["stable_min"]) - 0.5 * dxv
     elif abs(nb - nsl) < 1e-6:            # already the edge convention
         lo = float(cache["stable_min"])
@@ -194,7 +194,7 @@ def to_spec(cache, *, mode=None, enforce="monotone", sigma_floor=1.0e-3,
     cache = {**cache, "stable_min": lo, "stable_max": hi}
 
     m = find_mode(cache) if mode is None else float(mode)
-    c = _centres(cache)
+    c = _centers(cache)
     slopes, nfixed = enforce_unimodal(cache["slopes_log"], c, m, enforce)
     # sigma is fitted to the CLEANED slopes: fitting the raw ones would let a
     # single ragged bin set the weight given to every near-mode observation.

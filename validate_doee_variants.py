@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the original DOEE estimator with the regularised variant against
+"""Compare the original DOEE estimator with the regularized variant against
 known truths.
 
     python3 validate_doee_variants.py
@@ -104,7 +104,7 @@ def main(seeds=(11, 12, 13)):
         totals["orig"] += a0[:, 2].mean()
         totals["reg"] += a1[:, 2].mean()
     print(f"\ntotal L1   original {totals['orig']:.3f}   "
-          f"regularised {totals['reg']:.3f}")
+          f"regularized {totals['reg']:.3f}")
     print("\nThe original reports an excess kurtosis near -0.6 for every truth, "
           "including\nstrongly heavy-tailed ones: it is not measuring the "
           "tails at all. The variant\ntracks them conservatively -- smoothing "

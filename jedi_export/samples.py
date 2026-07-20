@@ -44,8 +44,8 @@ recovered width sits at sqrt(sigma_o^2 + sigma_b^2) and does not improve with
 sample size or ensemble size.
 
 The distinction that matters is whether the truth is EXCHANGEABLE with the
-members or is their CENTRE. If exchangeable, H(x_k) - truth has variance
-2 sigma_b^2, matching the member-difference kernel. If the members are centred
+members or is their CENTER. If exchangeable, H(x_k) - truth has variance
+2 sigma_b^2, matching the member-difference kernel. If the members are centered
 on the truth it has sigma_b^2 instead and the arithmetic changes. A reliable
 ensemble is exchangeable, which is what the deconvolution assumes -- and why
 ensemble reliability is worth checking rather than assuming.
