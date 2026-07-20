@@ -156,37 +156,39 @@ Tested on constructed ensembles it returns a ratio of 1.10 for a reliable one,
 0.41 when the members are too tightly clustered and 1.76 when too spread, with
 the corresponding warning about which way sigma_o will be biased.
 
-## The artifact floor, and when a tail can be believed at all
+## The null floor, and when a tail can be believed at all
 
 Stage A also found something that changes how any recovered density should be
 read. Deconvolution under a non-negativity constraint cannot perform the
-cancellations exact inversion needs, so the solver returns a density peaked in
-the middle with tails that are not in the data. Run on a GAUSSIAN truth the
-estimator reports excess kurtosis around +4, and that does not go away with
-more observations, more members, more smoothing or finer bins. It is bias, not
-variance: 2.5 times the observations with twice the members moved it slightly
-up.
+cancellations exact inversion needs, so the recovered density can carry tail
+weight that is not in the data, and a recovered excess kurtosis means
+something only if it exceeds what the same estimator returns on GAUSSIAN data
+at the same configuration. `null_calibration.py` measures that floor.
 
-`null_calibration.py` measures it for a given configuration:
+The floor turned out to be mostly the regulariser, not the deconvolution.
+Under the second-difference log penalty it sat near +4 at
+sigma_o/sigma_b = 0.8 and +29 at 0.5, did not fall with more data, and a
+Laplace error (true +3) could not clear it: Stage A reported +4.5 for Laplace
+against a floor of +4.3, indistinguishable from the penalty's own
+exponential-tail prior. Under the third-difference log penalty, whose null
+space contains log-quadratic and log-linear densities alike:
 
-    sigma_o/sigma_b   floor mean   floor p95   width bias
-        2.00             +0.66       +0.88        +4.5%
-        0.80             +3.77       +4.28       +14.0%
-        0.50            +20.49      +28.99       +33.7%
+    sigma_o/sigma_b   floor mean   floor p95   width bias    (2nd-diff p95)
+        2.00             +0.18       +0.26        +1.9%          +0.88
+        0.80             +0.84       +1.54        +4.2%          +4.28
+        0.80 2.5x data   +0.52       +0.55        +2.9%
+        0.50             +1.04       +1.24       +11.5%         +28.99
 
-So whether a tail can be measured at all is decided by how much of the
-innovation is observation error. Where the observation error is twice the
-background spread the floor is near +1 and a recovered shape means something.
-Where they are comparable, only strong non-Gaussianity clears the floor: the
-85/15 mixture (true +8) does, a Laplace error (true +3) does not, and Stage A
-reported +4.5 for Laplace against a floor of +4.3. Where the observation error
-is half the background spread the estimator reports +29 on Gaussian data and
-nothing about the shape can be believed.
+The floor now falls with more data, and Laplace-level tails clear it at every
+ratio measured: at the laplace configuration (ratio 1.13) the floor p95 is
++0.96 against a recovered +1.8. Width recovery at ratio 0.5 is still degraded
+(+11.5% bias), so the resolvability gate stays.
 
 Consequences worth carrying into the RRFS work: every exported density should
-report its floor alongside it, and the threshold for acting on a heavy tail is
-the floor rather than zero. A stratum whose resolvability is below about 0.7
-should be used for a variance estimate only, if at all.
+report its floor alongside it, computed with the SAME penalty that produced
+the estimate, and the threshold for acting on a heavy tail is the floor rather
+than zero. A stratum whose resolvability is below about 0.7 should be used for
+a variance estimate only, if at all.
 
 ## Step 3: cycling
 
