@@ -107,8 +107,11 @@ def main(seeds=(11, 12, 13)):
           f"regularised {totals['reg']:.3f}")
     print("\nThe original reports an excess kurtosis near -0.6 for every truth, "
           "including\nstrongly heavy-tailed ones: it is not measuring the "
-          "tails at all. The variant\ntracks them. The gaussian 0.4 case is "
-          "flagged by its resolvability and is not\nrecoverable by either "
+          "tails at all. The variant\ntracks them conservatively -- smoothing "
+          "biases recovered kurtosis low on strong\nmixtures -- but what it "
+          "reports clears the null floor "
+          "(l95-testbed/null_calibration.py).\nThe gaussian 0.4 case is "
+          "flagged by its resolvability and is not recoverable by\neither "
           "estimator.")
 
 

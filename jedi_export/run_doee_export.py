@@ -103,11 +103,11 @@ def main():
               "Pool more cycles.")
         return 1
 
-    import stable_doee as C
-    print(f"\nestimating from {Y.size} innovations and {Xs.size} perturbations "
-          f"({n_obs} observations x {meta['members']} members)")
-    grid, pi, cache = C.estimate_noise_pmf(Xs, Y)
-    cache = C.finalize_pdf_cache(grid, cache)
+    import stable_doee_reg as R
+    print(f"\nestimating from {n_obs} observations x {meta['members']} members")
+    grid, f_d, f_k = R.histograms_from_ensemble(Y, Xs)
+    innov = (Y[:, None] - Xs).ravel(order="F")
+    grid, pi, cache = R.estimate_from_histograms(grid, f_d, f_k, innov=innov)
 
     spec, nfixed = X.to_spec(cache, mode=a.mode, enforce=a.enforce,
                              save_sigma=a.save_sigma)

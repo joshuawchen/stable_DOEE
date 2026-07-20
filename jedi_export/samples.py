@@ -4,26 +4,62 @@ needed to stratify them, pooled over cycles.
 
 WHAT TO FEED THE ESTIMATOR
 
-estimate_noise_pmf(X, Y) solves Y = X + N by matching f_{Y-X} to
-f_{X1-X2} * pi_N. Setting
+Build the two histograms from the observations and the member values, pairing at
+the SAME LOCATION, and deconvolve them directly:
 
-    Y : ENSEMBLE INNOVATIONS      y - H(x_k)          = eps_o - eps_b
-    X : ENSEMBLE PERTURBATIONS    H(x_k) - H(x_bar)   ~ -eps_b
+    d = obs - H(x_k)                       innovation
+    f_d = f_eps_o * f_{-(H(x_k) - truth)}
+    kernel: H(x_i) - H(x_j) at the same location, which under exchangeability
+            has the law of H(x_k) - truth, and is symmetric so the sign of the
+            difference does not matter
 
-gives f_{Y-X} = f_{eps_o} * f_{-eps_b} * f_{eps_b} and
-f_{X1-X2} = f_{-eps_b} * f_{eps_b}, so the deconvolution returns f_{eps_o}
-exactly. This is DOEE on ensemble innovations. The estimator still treats its
-two arrays as unpaired samples; the pairing is used only to FORM the
-innovations and perturbations, which is ordinary DA bookkeeping.
+`stable_doee_reg.histograms_from_ensemble(obs, hofx)` builds them and
+`estimate_from_histograms` does the deconvolution. Both histograms are then
+error-scale, so the variability of the field cancels before the deconvolution
+sees anything.
 
-Do NOT pass raw ObsValue and raw H(x). Both carry the full variability of the
-field, which is far larger than the errors -- for temperature, several K of
-weather against about 1 K of observation error. The deconvolution is then asked
-to extract a narrow density from a histogram dominated by weather, and in
-testing it either returned a width roughly twice the truth or failed outright
-with a non-positive-definite QP. Forming innovations and perturbations first
-cancels the field exactly, and the recovered width becomes insensitive to how
-variable the field is.
+TWO WAYS TO GET THIS WRONG, both measured.
+
+Passing RAW observations and RAW member values to estimate_noise_pmf as its X
+and Y is correct in principle -- that is the identity the estimator implements,
+and it holds when the truth is exchangeable with the members. But the estimator
+pairs indices AT RANDOM, discarding the location correspondence, so the full
+variability of the field enters both histograms. With a field several kelvin
+wide and errors near one kelvin, about 98 per cent of the variance has to be
+deconvolved away; measured, the recovered width came back several times the
+truth.
+
+Passing INNOVATIONS and PERTURBATIONS as X and Y is worse, because it is not
+merely ill conditioned but wrong. The innovation is already a difference, so the
+estimator differences it again:
+
+    d = obs - member    variance sigma_o^2 + 2 sigma_b^2
+    p = member - mean   variance sigma_b^2
+    d_i - p_j           variance sigma_o^2 + 3 sigma_b^2
+    kernel p_i - p_j    variance 2 sigma_b^2
+    recovered           sigma_o^2 + sigma_b^2
+
+One background variance survives, and no amount of data removes it: the
+recovered width sits at sqrt(sigma_o^2 + sigma_b^2) and does not improve with
+sample size or ensemble size.
+
+The distinction that matters is whether the truth is EXCHANGEABLE with the
+members or is their CENTRE. If exchangeable, H(x_k) - truth has variance
+2 sigma_b^2, matching the member-difference kernel. If the members are centred
+on the truth it has sigma_b^2 instead and the arithmetic changes. A reliable
+ensemble is exchangeable, which is what the deconvolution assumes -- and why
+ensemble reliability is worth checking rather than assuming.
+
+Analysis residuals (O-A) are not an input at all. The analysis has already
+fitted those observations, so the residual is shrunk by construction and the
+estimated error comes out biased low. Feed that back into the assimilation and
+the bias compounds each cycle, converging on a self-consistent and wrong density
+that Desroziers-style checks computed from the same departures will not reveal.
+
+At least two members are required. The kernel is built from differences between
+members, so with one member there is nothing to deconvolve. The jdiag files from
+the deterministic jedivar carry only the control's hofx, so where member H(x)
+comes from is a workflow question to settle first.
 
 WHY STRATIFICATION MATTERS MORE THAN SAMPLE SIZE
 
@@ -193,31 +229,27 @@ def group(rec, by=("obstype",), level_edges=None):
 
 
 def samples(sub):
-    """Return (Y, X) for the estimator:
+    """Return (obs, hofx) for one stratum: obs of shape (n,), hofx of shape
+    (n, K).
 
-        Y = ensemble innovations   y - H(x_k),  stacked over members
-        X = ensemble perturbations H(x_k) - H(x_bar), stacked over members
-
-    Both are error-scale, so the variability of the field cancels before the
-    deconvolution ever sees the data.
+    Pass both to stable_doee_reg.histograms_from_ensemble, which pairs at the
+    same location. Do NOT form innovations and perturbations here and hand them
+    to estimate_noise_pmf -- see the module docstring for the arithmetic showing
+    why one background variance is left behind.
     """
-    hofx = sub["hofx"]                       # (n_obs, K)
-    obs = sub["obs"][:, None]
-    mbar = hofx.mean(axis=1, keepdims=True)
-    Y = (obs - hofx).ravel(order="F")
-    X = (hofx - mbar).ravel(order="F")
-    return Y, X
+    return sub["obs"], sub["hofx"]
 
 
 def report(sub, name="", min_n=1000, good_n=10000):
     """Print a usability summary for one stratum."""
-    Y, _X = samples(sub)
-    n = int(sub["obs"].size)
+    obs, hofx = samples(sub)
+    n = int(obs.size)
+    n_innov = int(hofx.size)
     verdict = ("ample" if n >= good_n else
                "usable, tails will be noisy" if n >= min_n else
                "TOO FEW -- pool more cycles or widen the stratum")
-    print(f"  {str(name):<28} obs={n:>7d}  innov={Y.size:>8d}  "
-          f"bins~{int(np.sqrt(Y.size)):>4d}  {verdict}")
+    print(f"  {str(name):<28} obs={n:>7d}  innov={n_innov:>8d}  "
+          f"bins~{int(np.sqrt(n_innov)):>4d}  {verdict}")
     return n
 
 
