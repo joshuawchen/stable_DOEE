@@ -91,7 +91,7 @@ def main(seeds=(11, 12, 13)):
                 warnings.simplefilter("ignore")
                 g0, p0, _ = ORIG.estimate_noise_pmf(X, Y)
                 so.append(score(g0, p0, tru))
-                g1, p1, cache = REG.estimate_noise_pmf_reg(X, Y)
+                g1, p1, cache = REG.estimate_noise_pmf_reg(X, Y, n_members=20)
                 sr.append(score(g1, p1, tru))
         a0, a1 = np.array(so), np.array(sr)
         tk = ((eo - eo.mean()) ** 4).mean() / eo.var() ** 2 - 3.0

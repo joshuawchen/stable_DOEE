@@ -4,23 +4,18 @@ Same deconvolution as `estimate_noise_pmf` in stable_doee: match the innovation
 histogram to the convolution of the noise density with the empirical difference
 histogram, subject to non-negativity and unit mass. Three changes.
 
-1. PENALTY ON THE CURVATURE OF log pi, not on differences of pi.
+1. PENALTY ON RELATIVE CURVATURE, not on differences of pi.
 
-   The density is represented downstream as piecewise-linear in log with
-   quadratic-log tails, so a penalty on the second difference of log pi costs
-   nothing for a log-linear segment or an exponential tail -- exactly the shapes
-   worth keeping -- while still suppressing bin-to-bin noise.
+   The penalty is sum_i w_i [(L pi)_i]^2 with L the second difference and
+   w_i ~ 1/pihat^2 refreshed each solve, which penalises pi''/pi. That is the
+   leading term of the curvature of log pi, and it is scale free in pi, so it
+   keeps acting in the tails. A penalty on differences of pi has almost no
+   effect there, the solution ends up on the non-negativity boundary, and the
+   trim that follows removes the tails outright.
 
-   Penalising differences of pi instead drives the solution against the
-   non-negativity boundary in the tails; the trimming that follows then cuts
-   them. Measured on synthetic data the original returns an excess kurtosis
-   near -0.6 for every truth tried, including one whose true excess kurtosis is
-   +7.2 -- that is, it reports a lighter-than-Gaussian tail for a strongly
-   heavy-tailed error. For a method whose purpose is the tails that is the
-   failure that matters.
-
-   Kept a QP by iterative reweighting: d^2 log pi ~ (d^2 pi)/pi, so the penalty
-   is || W^(1/2) L pi ||^2 with W = diag(1/pi_hat^2), refreshed each solve.
+   Measured against known truths the original returns an excess kurtosis near
+   -0.6 for every case tried, including truths whose excess kurtosis is +7 and
+   +22: it is not resolving the tails at all.
 
 2. THE SMOOTHING STRENGTH IS CROSS-VALIDATED, not fixed.
 
@@ -50,16 +45,16 @@ histogram, subject to non-negativity and unit mass. Three changes.
 Measured against the original on 8000 observations, 20 members, three seeds per
 case, scoring L1 distance to the true density:
 
-    case            original   regularised
-    gaussian 1.0      0.101       0.134
-    heavy 85/15       0.338       0.122
-    laplace 0.8       0.306       0.123
-    very heavy 95/5   0.381       0.244
-    gaussian 0.4      0.430       0.216   (flagged: resolvability 0.48)
-    total             1.557       0.839
+    case            original   regularised   resolvability
+    gaussian 1.0      0.093       0.134          1.00
+    heavy 85/15       0.334       0.122          1.02
+    laplace 0.8       0.304       0.123          1.15
+    very heavy 95/5   0.378       0.244          0.84
+    gaussian 0.4      0.423       0.216          0.41  (flagged)
+    total             1.533       0.839
 
-The one regression is a Gaussian truth, where the original is already adequate;
-every non-Gaussian case improves by a factor of two to three, and the recovered
+The one regression is a Gaussian truth, where the original is already adequate.
+Every non-Gaussian case improves by a factor of two to three, and the recovered
 excess kurtosis tracks the truth (+6.0 against +7.2, +3.0 against +2.8) instead
 of sitting at -0.6 regardless.
 
@@ -118,7 +113,30 @@ def _second_difference(n):
 
 
 def _solve(Eta, f_d, dx, n, lam, n_irls=3, floor=1e-6, ridge=1e-10):
-    """QP with an IRLS approximation to a curvature-of-log penalty."""
+    """QP with a reweighted relative-curvature penalty.
+
+    The penalty is
+
+        lam * sum_i w_i [(L pi)_i]^2,   w_i = (pihat_i pihat_i+1 pihat_i+2)^(-2/3)
+
+    with L the second difference and the weights refreshed from the previous
+    solve. This penalises pi'' / pi, the leading term of
+
+        d^2 log pi / dx^2 = pi''/pi - (pi'/pi)^2
+
+    so it is scale free in pi, which is the property that matters: it is
+    insensitive to the size of pi and therefore keeps acting in the tails, where
+    a penalty on differences of pi has almost no effect and the solution ends up
+    on the non-negativity boundary.
+
+    The dropped (pi'/pi)^2 term makes this an approximation to the curvature of
+    log pi rather than that curvature exactly. Linearising log pi about the
+    previous iterate gives the exact quadratic form, but diag(1/pihat) then
+    carries entries as large as 1/floor and the constant term carries
+    log(pihat), and the resulting QP is ill conditioned: tested, it was worse on
+    a Gaussian truth (L1 0.23 against 0.13) and quadprog reported inconsistent
+    constraints on a narrow one. The approximation is used because it works.
+    """
     L = _second_difference(n)
     H_data = 2.0 * dx ** 2 * (Eta.T @ Eta)
     f_data = -2.0 * dx * (Eta.T @ f_d)
@@ -131,11 +149,10 @@ def _solve(Eta, f_d, dx, n, lam, n_irls=3, floor=1e-6, ridge=1e-10):
     pi = np.full(n, 1.0 / (n * dx))            # flat start
     for _ in range(max(1, n_irls)):
         w = 1.0 / np.maximum(pi, floor) ** 2
-        # weight each curvature row by the local 1/pi^2, geometric mean over the
-        # three bins it touches so the weight itself is smooth
+        # geometric mean over the three bins each curvature row touches, so the
+        # weight itself is smooth
         wr = np.exp(np.log(w[:-2] * w[1:-1] * w[2:]) / 3.0)
-        H_smooth = 2.0 * lam * (L.T @ (wr[:, None] * L))
-        H = H_data + H_smooth + ridge * np.eye(n)
+        H = H_data + 2.0 * lam * (L.T @ (wr[:, None] * L)) + ridge * np.eye(n)
         H = 0.5 * (H + H.T)                    # symmetrise for quadprog
         ev = np.linalg.eigvalsh(H)
         if ev[0] <= 0:
@@ -166,31 +183,39 @@ def _cv_fold_scores(Eta, dx, n, x_min, x_max, innov, lam, folds=4, seed=0,
     return np.asarray(out)
 
 
-def resolvability(X, Y):
+def resolvability(X, Y, n_members):
     """How much of the innovation is observation error rather than background
     spread. Returns (sigma_o / sigma_b, sigma_o).
 
-    sigma_o^2 = var(innovation) - var(perturbation). Below about 0.5 the
-    deconvolution is ill posed and the recovered shape should not be trusted,
-    whichever estimator is used: no amount of data or regularisation resolves a
-    narrow density from a much wider kernel.
+    Perturbations are taken about the ensemble mean, so their variance is
+    sigma_b^2 (K-1)/K, not sigma_b^2. Without the correction sigma_b comes out
+    low and sigma_o high, by about 2.5% at K=20 and more for smaller ensembles.
+
+        sigma_o^2 = var(Y) - K/(K-1) var(X)
+
+    Below about 0.5 the deconvolution is ill posed and the recovered shape
+    should not be trusted, whichever estimator is used: no amount of data or
+    regularisation resolves a narrow density from a much wider kernel.
     """
-    v_innov = float(np.var(Y))           # sigma_o^2 + sigma_b^2
-    v_b = float(np.var(X))               # perturbations carry sigma_b^2
+    if n_members < 2:
+        raise ValueError("need at least two members to estimate the spread")
+    v_innov = float(np.var(Y))                       # sigma_o^2 + sigma_b^2
+    v_b = float(np.var(X)) * n_members / (n_members - 1.0)
     v_noise = max(v_innov - v_b, 0.0)
     sb = np.sqrt(max(v_b, 1e-300))
     return float(np.sqrt(v_noise) / sb), float(np.sqrt(v_noise))
 
 
-def estimate_noise_pmf_reg(X, Y, lam=None, lam_grid=None, folds=4,
+def estimate_noise_pmf_reg(X, Y, n_members, lam=None, lam_grid=None, folds=4,
                            n_irls=3, p_lo=1, p_hi=99, pad_frac=0.05,
                            trim_log=-30.0, seed=0, verbose=False,
                            well_posed=0.7):
     """Regularised DOEE. Returns (x_grid, pi_N, cache) like the original, with
     'lambda' and 'resolvability' added to the cache.
 
-    X   : ensemble perturbations   H(x_k) - H(x_bar)
-    Y   : ensemble innovations     y - H(x_k)
+    X   : ensemble perturbations   H(x_k) - H(x_bar), stacked over members
+    Y   : ensemble innovations     y - H(x_k), stacked over members
+    n_members : K, needed to correct the perturbation variance for the mean
     lam : smoothing strength; cross-validated when None
     trim_log : log-density threshold for the stable interior, far below the
                original -20 because the log-curvature penalty keeps the tails
@@ -203,7 +228,7 @@ def estimate_noise_pmf_reg(X, Y, lam=None, lam_grid=None, folds=4,
         X, Y, p_lo, p_hi, pad_frac, rng)
     Eta = _conv_matrix(f_k, n, dx, x_min)
 
-    ratio, sig_o_hat = resolvability(X, Y)
+    ratio, sig_o_hat = resolvability(X, Y, n_members)
     if verbose:
         print(f"    resolvability sigma_o/sigma_b = {ratio:.2f} "
               f"(sigma_o ~ {sig_o_hat:.3f})")
