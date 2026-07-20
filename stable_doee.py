@@ -29,7 +29,8 @@ def estimate_noise_pmf(
     p_lo: float = 1,
     p_hi: float = 99,
     pad_frac: float = 0.05,
-    var_cov_mat=1.0
+    var_cov_mat=1.0,
+    seed=None
     ) -> tuple[np.ndarray, np.ndarray, dict]:
     """
     Estimate a discretized noise density (PMF on an evenly spaced grid) for the
@@ -60,6 +61,10 @@ def estimate_noise_pmf(
         Global scale on the exponential covariance used in the smoothing
         penalty (applied in the first-difference space). Larger values yield
         stronger smoothing.
+    seed : int, np.random.Generator or None, default=None
+        Controls the random index pairing used to build the two histograms.
+        Pass an integer for a reproducible estimate. None draws fresh pairings
+        each call, so repeated calls on the same data give different densities.
 
     Returns
     -------
@@ -127,8 +132,9 @@ def estimate_noise_pmf(
     Randomness
     ----------
     Random index pairing is used to form the innovation and difference samples
-    for the histograms. For reproducibility, set NumPy's random seed before
-    calling.
+    for the histograms. Pass `seed` for a reproducible estimate; without it the
+    same data give a different density on every call, which matters once a
+    density is used to configure an experiment and has to be regenerated.
 
     Caveats
     -------
@@ -147,6 +153,8 @@ def estimate_noise_pmf(
     >>> pdf_vals = pdf(np.linspace(-10, 20, 502), pmf_cache) # continuous PDF at many values
     """
     # infer support from X,Y percentiles
+    rng = seed if isinstance(seed, np.random.Generator) \
+        else np.random.default_rng(seed)
     x_lo, x_hi = np.percentile(X, [p_lo, p_hi])
     y_lo, y_hi = np.percentile(Y, [p_lo, p_hi])
     n_lo, n_hi = y_lo - x_hi, y_hi - x_lo
@@ -165,15 +173,15 @@ def estimate_noise_pmf(
     n = n_bins
 
     # innovation histogram f_d
-    idx_y = np.random.randint(len(Y), size=len(Y))
-    idx_x = np.random.randint(len(X), size=len(Y))
+    idx_y = rng.integers(len(Y), size=len(Y))
+    idx_x = rng.integers(len(X), size=len(Y))
     innovations = Y[idx_y] - X[idx_x]
     f_d, _ = np.histogram(innovations, bins=n,
                           range=(x_min, x_max), density=True)
 
     # difference histogram f_x1_x2
-    idx1 = np.random.randint(len(X), size=len(X))
-    idx2 = np.random.randint(len(X), size=len(X))
+    idx1 = rng.integers(len(X), size=len(X))
+    idx2 = rng.integers(len(X), size=len(X))
     diffs = X[idx1] - X[idx2]
     f_x1_x2, _ = np.histogram(diffs, bins=n,
                               range=(x_min, x_max), density=True)

@@ -89,7 +89,7 @@ def main(seeds=(11, 12, 13)):
             X, Y, eo = sample(draw, seed)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                g0, p0, _ = ORIG.estimate_noise_pmf(X, Y)
+                g0, p0, _ = ORIG.estimate_noise_pmf(X, Y, seed=seed)
                 so.append(score(g0, p0, tru))
                 g1, p1, cache = REG.estimate_noise_pmf_reg(X, Y, n_members=20)
                 sr.append(score(g1, p1, tru))
