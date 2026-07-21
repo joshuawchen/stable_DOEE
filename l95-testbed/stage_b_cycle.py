@@ -102,10 +102,16 @@ def posterior_pieces(Pinv, mu, H, y, nll, dnll):
 # providers
 # ---------------------------------------------------------------------------
 
-def analyze_exact(Xf, y, H, C, nll, dnll, hh, K, rng):
+def analyze_exact(Xf, y, H, C, nll, dnll, hh, K, rng, burn=150):
     """Preconditioned MALA targeting the exact posterior of the shared
-    Gaussian prior and the current likelihood. Preconditioner = the MAP
-    Hessian (clipped curvature), proposal covariance tau^2 A^-1."""
+    Gaussian prior and the current likelihood -- one independent chain per
+    member, started at that member's prior position, keeping the last
+    state. Independent chains matter: a single thinned chain leaves the
+    ensemble autocorrelated (effective K well below K), which at sparse
+    observations starves both the analysis mean and the deconvolution
+    kernel; per-member chains also cover separated modes the way a single
+    chain cannot. Preconditioner = the MAP Hessian (clipped curvature),
+    adapted step on the first chain, reused on the rest."""
     mu, P = fit_prior(Xf, C)
     Pinv = np.linalg.inv(P)
     xmap, _, _ = solve_map(Pinv, H, mu, y, nll, dnll, mu, h=hh)
@@ -114,40 +120,36 @@ def analyze_exact(Xf, y, H, C, nll, dnll, hh, K, rng):
     c = np.clip((dnll(e + hh) - dnll(e - hh)) / (2 * hh), 0.0, None)
     A = Pinv + (H.T * c) @ H + 1e-10 * np.eye(Xf.shape[0])
     L = np.linalg.cholesky(A)
-
-    def half_step(x, g):
-        return x + 0.5 * tau * tau * np.linalg.solve(A, g)
-
-    def draw(x, g):
-        z = rng.standard_normal(x.size)
-        return half_step(x, g) + tau * np.linalg.solve(L.T, z)
-
-    def logq(xp, x, g):
-        d = xp - half_step(x, g)
-        return -0.5 / (tau * tau) * d @ A @ d
-
-    tau, acc, x = 0.6, 0, xmap.copy()
-    lp, g = logp(x), grad(x)
-    burn, thin = 400, 15
-    samples, accs = [], []
-    for it in range(burn + thin * K):
-        xp = draw(x, g)
-        lpp, gp = logp(xp), grad(xp)
-        a_log = lpp - lp + logq(x, xp, gp) - logq(xp, x, g)
-        if np.log(rng.random()) < a_log:
-            x, lp, g = xp, lpp, gp
-            acc += 1
-        accs.append(acc)
-        if it < burn and it % 50 == 49:
-            rate = (accs[-1] - (accs[-51] if it >= 50 else 0)) / 50.0
-            if rate > 0.65:
-                tau *= 1.15
-            elif rate < 0.45:
-                tau /= 1.15
-        if it >= burn and (it - burn) % thin == thin - 1:
-            samples.append(x.copy())
-    Xa = np.stack(samples, axis=1)
-    return Xa, {"acc_rate": acc / (burn + thin * K), "tau": tau}
+    tau, acc_tot, n_tot = 0.55, 0, 0
+    Xa = np.empty((Xf.shape[0], K))
+    for k in range(K):
+        x = Xf[:, k].copy()
+        lp, g = logp(x), grad(x)
+        acc_c = 0
+        for it in range(burn):
+            m_x = x + 0.5 * tau * tau * np.linalg.solve(A, g)
+            xp = m_x + tau * np.linalg.solve(
+                L.T, rng.standard_normal(x.size))
+            lpp, gp = logp(xp), grad(xp)
+            m_xp = xp + 0.5 * tau * tau * np.linalg.solve(A, gp)
+            dq_f = xp - m_x
+            dq_b = x - m_xp
+            a_log = lpp - lp \
+                - 0.5 / tau ** 2 * (dq_b @ A @ dq_b) \
+                + 0.5 / tau ** 2 * (dq_f @ A @ dq_f)
+            if np.log(rng.random()) < a_log:
+                x, lp, g = xp, lpp, gp
+                acc_c += 1
+            if k == 0 and it % 25 == 24:
+                r_ = acc_c / (it + 1)
+                if r_ > 0.65:
+                    tau *= 1.15
+                elif r_ < 0.45:
+                    tau /= 1.15
+        acc_tot += acc_c
+        n_tot += burn
+        Xa[:, k] = x
+    return Xa, {"acc_rate": acc_tot / max(n_tot, 1), "tau": tau}
 
 
 def analyze_pff(Xf, y, H, C, nll, dnll, hh, K, rng, iters=250, step0=0.1):
