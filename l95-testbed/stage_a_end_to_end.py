@@ -471,6 +471,12 @@ def main():
     ap.add_argument("--reuse-ensemble", action="store_true",
                     help="real mode: skip genenspert and the member runs if "
                          "their outputs already exist")
+    ap.add_argument("--lam", type=float, default=None,
+                    help="force the smoothing strength, skipping selection; "
+                         "the null floor is measured at the same value. On "
+                         "the first record ensemble the flat criterion plus "
+                         "the calibrated default under-smoothed at 347 bins "
+                         "(sigma at mode 0.24 vs 0.50); lam 30 restored it")
     ap.add_argument("--oracle-density", action="store_true",
                     help="export the injected density instead of the "
                          "estimate; separates estimation quality from the "
@@ -601,7 +607,7 @@ def main():
         grid, f_d, f_k, innov = R.histograms_from_ensemble(obs, hofx,
                                                            seed=a.seed + 2)
         groups = R.innovation_groups(len(obs), hofx.shape[1])
-        xg, pi, cache = R.estimate_from_histograms(grid, f_d, f_k,
+        xg, pi, cache = R.estimate_from_histograms(grid, f_d, f_k, lam=a.lam,
                                                    innov=innov, groups=groups)
     sd, ku = moments_on(xg, pi)
     fine = np.arange(-10.0, 10.0001, 0.02)
@@ -660,7 +666,8 @@ def main():
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             floor = NC.null_floor(sigma_o_est, sigma_b_est, len(obs),
-                                  hofx.shape[1], trials=a.floor_trials)
+                                  hofx.shape[1], trials=a.floor_trials,
+                                  lam=(a.lam if a.lam is not None else 1e-1))
         rep.info(f"sigma_o~{sigma_o_est:.3f} sigma_b~{sigma_b_est:.3f}  floor "
                  f"mean {floor['kurtosis_mean']:+.2f}  p95 "
                  f"{floor['kurtosis_p95']:+.2f}")
