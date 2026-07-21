@@ -579,6 +579,37 @@ def measure_bin_cov(grid, innov, groups, sig, seed=0, n_boot=192):
     return W, a
 
 
+def _qp(H, a, C, b):
+    """quadprog with a conditioning-failure retry ladder.
+
+    quadprog reports "constraints are inconsistent" on numerical
+    breakdown even though pi >= 0 with unit mass is always feasible;
+    measured on the d800 ensemble the failures are PATCHY IN mu
+    (1.2e-2 failed between two successes), and since the cross-split
+    criterion maps a failed half-fit to +inf, the selection was left
+    choosing over a mu axis with holes exactly where the smooth
+    candidates lived -- the one-SE rule degraded to "roughest that
+    solves" and picked 1.1e-3 with satellites. The first attempt is
+    bit-identical to the direct call; retries rescale the objective to
+    O(1) (solution-invariant) and add a relative ridge escalating from
+    1e-12 to 1e-4 of the Hessian scale, negligible against the penalty
+    curvature but enough to carry the factorization through."""
+    try:
+        return quadprog.solve_qp(H, a, C, b, meq=1)[0]
+    except ValueError:
+        pass
+    n = H.shape[0]
+    s = max(float(np.abs(np.diag(H)).max()), 1.0)
+    last = None
+    for rel in (0.0, 1e-12, 1e-10, 1e-8, 1e-6, 1e-4):
+        try:
+            return quadprog.solve_qp((H + rel * s * np.eye(n)) / s, a / s,
+                                     C, b, meq=1)[0]
+        except ValueError as e:
+            last = e
+    raise last
+
+
 def _solve_whitened(Eta, f_d, sig, dx, mu, n_irls=3, floor=1e-6,
                     ridge=1e-10):
     """The _solve QP with a whitened data term and the dx^-5-normalized
@@ -610,7 +641,7 @@ def _solve_whitened(Eta, f_d, sig, dx, mu, n_irls=3, floor=1e-6,
         ev = np.linalg.eigvalsh(H)
         if ev[0] <= 0:
             H += (abs(ev[0]) + 1e-8) * np.eye(n)
-        pi = quadprog.solve_qp(H, a, C, b, meq=1)[0]
+        pi = _qp(H, a, C, b)
         pi = np.maximum(pi, 0.0)
     r = dx * (Eta @ pi) - f_d
     chi2 = float(((r / sig) ** 2).sum())
