@@ -134,6 +134,53 @@ problem from the record ensemble is SOLVED by more observations (sigma
 at mode 0.514 at lam 30, 0.493 at lam 100); the lam-dilution rule of
 thumb held (30 at 347 bins ~ 100+ at 490 bins).
 
+## The adaptive estimator (2026-07-21, latest; EXPERIMENTAL)
+
+Answers the lambda-selection problem from theory instead of tuning, and
+supersedes the lambda-selection research line. Code: an additive section
+in `stable_doee_reg.py` (`measure_bin_noise`, `_solve_whitened`,
+`adaptive_bin_count`, `estimate_adaptive`,
+`estimate_adaptive_from_ensemble`); battery:
+`l95-testbed/test_adaptive.py`, 7/7 at this tip. Not wired to the
+driver yet, deliberately: prototype grade.
+
+Design, derived (full derivation in the module's section comment):
+per-bin histogram noise is MEASURED from grouped half-splits (unbiased
+including the shared-epsilon correlations no clean model captures), with
+an all-samples-independent Poisson floor for sparse bins; the data term
+is whitened by it; the penalty carries dx^-5 so the smoothing strength
+mu means the same thing at every bin count (the unnormalized form is
+why more members silently collapsed the smoothing 32x); mu is chosen by
+the discrepancy principle against the parameter-free target
+chi2 = n_bins, exact by construction of the empirical variances. That
+is the adaptivity the problem demands: no smoothness assumed, more data
+shrinks the noise, shrinks the feasible mu, and lets the estimate be as
+rough as the data supports. Infeasibility (min chi2 > n_bins) is the
+over-dispersion signature, reported as cache['chi2_ratio'].
+
+Measured scoreboard, identical data, legacy at its best lambda:
+gaussian 2000x20 adaptive WINS (L1 0.125 vs 0.182; the battery's null
+is L1 0.067, the best in the project); record-class heavy 1200x100
+adaptive MATCHES hand-tuned lam 30 (0.070 vs 0.077) with zero tuning;
+over-dispersed x1.24 adaptive RECOVERS (L1 0.18, sd 0.855) where every
+legacy configuration fragments; irregular bimodal truth: both modes at
+every n, sd 1.37-1.40 vs 1.386, mu falls with n. KNOWN GAP: heavy
+2000x20 is ~2x worse than legacy (0.27-0.30 vs 0.08-0.16 over seeds
+11/12/13, mu pinning at 2e-2; suspects: the coarse 10^0.75 mu-grid
+steps and the Poisson-floor interplay at moderate tails). KNOWN
+WRINKLE: resolution invariance nb vs 2nb gave L1 0.186 between the two
+solutions against a <0.06 target. Both are pinned in the battery so
+improvement is visible and regression fails.
+
+Debugging lessons paid for: (1) the group-limited noise rate
+f/(n_groups dx) as a conservative envelope over-states fine-bin noise
+20-50x and smoothed every recovery flat -- the correct sparse-bin
+repair is the pure Poisson floor f/(N dx) (documented in the code);
+(2) `_make_cache` trims to the contiguous main run by design (unimodal
+export), which silently cost a bimodal recovery its second mode and 70%
+of its variance -- `estimate_adaptive` therefore returns the FULL
+grid/pi and keeps the trimmed cache for export only.
+
 ## Queue, in order
 
 1. Obs-density sweep, the regime map and likely the paper figure:
@@ -141,9 +188,11 @@ thumb held (30 at 347 bins ~ 100+ at 490 bins).
    pair is done; 400 needs a members-50 rerun for homogeneity). The
    margin-vs-density curve from the oracle column is estimate-free; the
    realizable column shows where the estimation floor crosses it.
-2. Lambda-selection research, starting with a measurement script on the
-   VM producing criterion curves on the real member files. Note the
-   measured dilution anchor: lam 30 at 347 bins ~ lam 100+ at 490 bins.
+2. Adaptive estimator, close the two open items above (heavy-2000x20
+   gap, resolution invariance), then a driver `--adaptive` flag and VM
+   acceptance on the record and dense member files -- expect lam-30- and
+   lam-100-class quality automatically. Then re-pin floors and records
+   under mu. (Supersedes the lambda-selection research line.)
 3. oops fork, next build session: the C++ consumer of
    `jedi_export/fixtures.json` (8 cases, C++ key names; the assimilation
    unit tests take `test/testinput/empty.yaml` via TestEnvironment, so a
@@ -155,6 +204,7 @@ thumb held (30 at 347 bins ~ 100+ at 490 bins).
 
     cd stable_DOEE/jedi_export && python3 selftest.py && python3 check_fixtures.py
     cd ../l95-testbed && python3 test_regressions.py
+    python3 test_adaptive.py                             # adaptive estimator, 7/7
     python3 stage_a_end_to_end.py --synthetic            # + --density mirrored_gamma, laplace
     python3 stage_a_end_to_end.py --synthetic --n-obs 1200 --members 100 \
         --scale 2 --assumed-error 0.9 --sigma-b 0.55 --lam 30

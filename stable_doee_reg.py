@@ -305,6 +305,204 @@ def estimate_from_histograms(grid, f_d, f_k, lam=None, lam_grid=None,
     return _make_cache(grid, pi, dx, lam, ratio, trim_log)
 
 
+# ---------------------------------------------------------------------------
+# Adaptive estimation: whitened data term, resolution-invariant penalty,
+# smoothing chosen by the discrepancy principle against a measured noise
+# level. The design, derived:
+#
+#   DATA MODEL. The innovation histogram f_d is regression data for the
+#   deconvolution, not a density estimate in its own right, so the bin
+#   count is numerics, not statistics: with a correct per-bin noise model
+#   nothing is lost by binning finely. Per-bin noise cannot be modeled
+#   cleanly (each observation's error draw appears in every member's
+#   innovation, so bins are correlated through the kernel width and the
+#   effective count sits between n and n*K), so it is MEASURED: for each
+#   of `splits` grouped half-splits, ((fA - fB)/2)^2 is an unbiased
+#   per-bin sample of Var(f_d) including all correlation effects, and the
+#   average over splits is the variance estimate. Structurally empty bins
+#   are floored at a small fraction of the median positive variance.
+#
+#   OBJECTIVE. chi2(pi) = sum_i (dx*(Eta pi)_i - f_d_i)^2 / sig_i^2
+#   plus mu * dx^-5 * sum_j w_j (L pi)_j^2 with the same reweighted
+#   third-difference-of-log penalty as _solve. The dx^-5 makes the
+#   penalty's continuum strength independent of the bin count (the third
+#   difference contributes dx^6 per bin over 1/dx bins), so mu means the
+#   same thing at every resolution -- the unnormalized form is why more
+#   members silently collapsed the smoothing 32x on the record ensemble.
+#
+#   SELECTION. E[chi2 at the true density] = nb exactly, by construction
+#   of the empirical variances, so the discrepancy principle has a
+#   parameter-free target: the LARGEST mu with chi2(mu) <= nb. This is
+#   the adaptivity the problem demands: nothing about the truth's
+#   smoothness is assumed; more data shrinks sig, shrinks the feasible
+#   mu, and lets the estimate become as rough as the data can support.
+#   If no mu is feasible the model cannot represent the data within its
+#   own noise (the over-dispersion signature) and the minimum-chi2 mu is
+#   used with chi2_min/nb reported as a consistency ratio.
+# ---------------------------------------------------------------------------
+
+def measure_bin_noise(grid, innov, groups, seed=0, splits=8, floor_frac=0.05):
+    """Per-bin noise sd of the innovation histogram, measured from grouped
+    half-splits. Returns sig of shape (n,)."""
+    innov = np.asarray(innov, float)
+    grid = np.asarray(grid, float)
+    n = grid.size
+    dx = grid[1] - grid[0]
+    lo, hi = grid[0], grid[-1] + dx
+    if groups is None:
+        groups = np.arange(innov.size)
+    groups = np.asarray(groups)
+    uniq0 = np.unique(groups)
+    acc = np.zeros(n)
+    for m in range(splits):
+        rng = np.random.default_rng(seed + 7919 * (m + 1))
+        uniq = rng.permutation(uniq0)
+        selA = np.isin(groups, uniq[:uniq.size // 2])
+        fA, _ = np.histogram(innov[selA], bins=n, range=(lo, hi),
+                             density=True)
+        fB, _ = np.histogram(innov[~selA], bins=n, range=(lo, hi),
+                             density=True)
+        acc += 0.25 * (fA - fB) ** 2
+    sig2 = acc / splits
+    # Sparse-bin floor. With a handful of counts per bin the split
+    # estimate can come out near zero by luck (each split difference is a
+    # single chi-square draw on discrete counts), and an under-estimated
+    # sigma over-weights exactly the bins the model cannot and should not
+    # fit -- measured at n=500 obs and 263 bins, the unfittable
+    # single-count spikes ate the whole chi-square budget and forced the
+    # selection to the smallest mu on the grid. Any bin's variance is at
+    # least the all-samples-independent Poisson rate f/(N dx) (computed on
+    # a box-smoothed histogram with an additive half count so it stays
+    # positive in empty regions), so that is the floor; the measured value
+    # keeps the correlation surplus wherever the counts support measuring
+    # it. The group-limited rate f/(n_groups dx) was tried as a
+    # conservative envelope and is wrong at fine bins -- it assumes a
+    # group's members share a bin, over-states the noise 20-50x, and
+    # smoothed every recovery flat.
+    f_loc, _ = np.histogram(innov, bins=n, range=(lo, hi), density=True)
+    box = np.ones(5) / 5.0
+    f_s = np.convolve(f_loc, box, mode="same") + 0.5 / (innov.size * dx)
+    sig2 = np.maximum(sig2, f_s / (innov.size * dx))
+    pos = sig2[sig2 > 0]
+    if pos.size:
+        sig2 = np.maximum(sig2, floor_frac * np.median(pos))
+    else:
+        sig2 = np.full(n, 1.0)
+    return np.sqrt(sig2)
+
+
+def _solve_whitened(Eta, f_d, sig, dx, n, mu, n_irls=3, floor=1e-6,
+                    ridge=1e-10):
+    """The _solve QP with a whitened data term and the dx^-5-normalized
+    penalty; see the section comment above. Returns (pi, chi2)."""
+    L = _third_difference(n)
+    W2 = 1.0 / np.asarray(sig, float) ** 2
+    H_data = 2.0 * dx ** 2 * (Eta.T @ (W2[:, None] * Eta))
+    a = 2.0 * dx * (Eta.T @ (W2 * f_d))
+
+    C_eq = dx * np.ones((n, 1))
+    C = np.hstack([C_eq, np.eye(n)])
+    b = np.hstack([1.0, np.zeros(n)])
+
+    pi = np.full(n, 1.0 / (n * dx))
+    for _ in range(max(1, n_irls)):
+        w = 1.0 / np.maximum(pi, floor) ** 2
+        wr = np.exp(np.log(w[:-3] * w[1:-2] * w[2:-1] * w[3:]) / 4.0)
+        H = H_data + 2.0 * (mu / dx ** 5) * (L.T @ (wr[:, None] * L)) \
+            + ridge * np.eye(n)
+        H = 0.5 * (H + H.T)
+        ev = np.linalg.eigvalsh(H)
+        if ev[0] <= 0:
+            H += (abs(ev[0]) + 1e-8) * np.eye(n)
+        pi = quadprog.solve_qp(H, a, C, b, meq=1)[0]
+        pi = np.maximum(pi, 0.0)
+    r = dx * (Eta @ pi) - f_d
+    chi2 = float(((r / sig) ** 2).sum())
+    return pi, chi2
+
+
+def adaptive_bin_count(innov, per_scale=30, max_bins=1201):
+    """Bin count from the data scale, not the sample count: dx is a robust
+    innovation scale over per_scale, so resolution reflects the features
+    the density can have rather than how many duplicated samples exist."""
+    innov = np.asarray(innov, float)
+    s = 1.4826 * np.median(np.abs(innov - np.median(innov)))
+    if not s > 0:
+        s = max(float(np.std(innov)), 1e-6)
+    nb = int(np.ceil((innov.max() - innov.min()) / (s / per_scale))) | 1
+    return min(nb, max_bins)
+
+
+def estimate_adaptive(grid, f_d, f_k, innov, groups, seed=0, n_irls=3,
+                      mu_grid=None, splits=8, trim_log=-30.0, verbose=False):
+    """Deconvolve with the whitened objective and discrepancy-selected mu.
+    Same inputs and cache contract as estimate_from_histograms, plus the
+    raw innovations and groups (both required: the noise level is
+    measured, not assumed). The cache carries mu in cache['lambda'] and
+    the consistency ratio chi2/nb in cache['chi2_ratio']."""
+    grid = np.asarray(grid, float)
+    f_d = np.asarray(f_d, float)
+    n = grid.size
+    dx = grid[1] - grid[0]
+    Eta = _conv_matrix(np.asarray(f_k, float), n, dx, grid[0])
+
+    ratio = np.nan
+    v_d, v_k = _hist_var(grid, f_d), _hist_var(grid, f_k)
+    if v_k > 0:
+        ratio = float(np.sqrt(max(v_d - v_k, 0.0)) / np.sqrt(v_k / 2.0))
+
+    sig = measure_bin_noise(grid, innov, groups, seed=seed, splits=splits)
+    if mu_grid is None:
+        mu_grid = np.logspace(-10.0, 2.0, 17)
+    chi2 = {}
+    best_pi = None
+    chosen = None
+    for mu in mu_grid:                       # ascending
+        try:
+            pi, c2 = _solve_whitened(Eta, f_d, sig, dx, n, float(mu),
+                                     n_irls=n_irls)
+        except Exception:
+            continue
+        chi2[float(mu)] = c2
+        if c2 <= n:
+            chosen, best_pi = float(mu), pi   # largest feasible so far
+    rule = "discrepancy"
+    if chosen is None:
+        if not chi2:
+            raise RuntimeError("no mu on the grid produced a solution")
+        chosen = min(chi2, key=chi2.get)
+        best_pi, _ = _solve_whitened(Eta, f_d, sig, dx, n, chosen,
+                                     n_irls=n_irls)
+        rule = "min-chi2 (model cannot reach the noise level)"
+    if verbose:
+        pts = "  ".join(f"{m:.0e}:{chi2[m] / n:.2f}"
+                        for m in sorted(chi2))
+        print(f"    chi2/nb over mu {pts}; chosen ({rule}) mu = "
+              f"{chosen:.3e} (nb {n}, resolvability {ratio:.2f})")
+    # The cache keeps _make_cache's contract (the contiguous main run, which
+    # is what the unimodal DA export can use, with kept_mass honestly
+    # reporting that run's fraction), but the RETURNED arrays are the full
+    # estimate: a genuinely multimodal recovery must not be silently
+    # truncated to its tallest mode -- measured, the truncation cost a
+    # bimodal truth its entire second mode and 70% of its variance.
+    _, _, cache = _make_cache(grid, best_pi, dx, chosen, ratio, trim_log)
+    cache["chi2_ratio"] = chi2[chosen] / n
+    return grid, best_pi, cache
+
+
+def estimate_adaptive_from_ensemble(obs, hofx, seed=0, **kw):
+    """Convenience wrapper: histograms at the data-scale bin count, then
+    estimate_adaptive. Two histogram passes; the first only supplies the
+    innovations for the bin-count rule."""
+    _, _, _, innov = histograms_from_ensemble(obs, hofx, seed=seed)
+    nb = adaptive_bin_count(innov)
+    grid, f_d, f_k, innov = histograms_from_ensemble(obs, hofx, seed=seed,
+                                                     n_bins=nb)
+    groups = innovation_groups(np.asarray(obs).size,
+                               np.asarray(hofx).shape[1])
+    return estimate_adaptive(grid, f_d, f_k, innov, groups, seed=seed, **kw)
+
+
 def _hist_var(grid, f):
     dx = grid[1] - grid[0]
     f = np.asarray(f, float)
