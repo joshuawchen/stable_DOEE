@@ -221,14 +221,24 @@ def analytic_nll(spec):
     raise ValueError(k)
 
 
-def spec_nll(fmt_spec, half_width):
-    """(nll, dnll) in epsilon from a Format A spec, using the exact
-    Density.score the C++ applies (at d = -epsilon, the export's reflected
-    variable) and a fine tabulated integral of the score for the value, so
-    line searches and the score stay consistent."""
+def spec_nll(fmt_spec, half_width, semantics="score"):
+    """(nll, dnll) in epsilon from a Format A spec. semantics="score" uses
+    the exact Density.score, so the arm's minimizer is the exact MAP of the
+    exported density. semantics="jedi" instead uses the evolving-Gaussian
+    effective gradient (d - m)/sigma_o^2(d) through Density.variance
+    verbatim -- mode window, sigma floor and fallback branches included --
+    so the minimizer is the infinite-outer-loop fixed point of the C++
+    iteration. The two agree wherever sigma_o^2(d) = (d - m)/g(d) holds
+    exactly; their gap is the cost of the Eq. 9 machinery itself. Either
+    way a fine tabulated integral supplies the value, so line searches
+    and the gradient stay consistent."""
     den = DY.Density(fmt_spec)
     dg = np.linspace(-half_width, half_width, 20001)
-    sc = np.array([den.score(float(d)) for d in dg])
+    if semantics == "jedi":
+        sc = np.array([(float(d) - den.m) / den.variance(float(d))
+                       for d in dg])
+    else:
+        sc = np.array([den.score(float(d)) for d in dg])
     logf = np.concatenate([[0.0], np.cumsum(-0.5 * (sc[1:] + sc[:-1])
                                             * np.diff(dg))])
 
@@ -373,14 +383,15 @@ def replicate(a, seed, quiet):
     est_spec, nfixed = DY.to_spec(cache)
     est_bad = DY.check(est_spec)
     half = 12.0 * max(sd, spec_inj["sample_sigma"], a.assumed_error)
+    sem = "jedi" if getattr(a, "jedi_semantics", False) else "score"
     if not est_bad:
-        arms["estimated"] = (*spec_nll(est_spec, half),
+        arms["estimated"] = (*spec_nll(est_spec, half, sem),
                              0.5 * est_spec["grid spacing"])
 
     tf_spec, _ = DY.to_spec(oracle_cache(spec_inj))
     tf_bad = DY.check(tf_spec)
     if not tf_bad and not a.no_true_fmt:
-        arms["true-fmt"] = (*spec_nll(tf_spec, half),
+        arms["true-fmt"] = (*spec_nll(tf_spec, half, sem),
                             0.5 * tf_spec["grid spacing"])
 
     # sigma at the mode: the exported value against the true density's
@@ -565,6 +576,14 @@ def main():
     ap.add_argument("--extra-starts", type=int, default=3)
     ap.add_argument("--no-true-fmt", action="store_true",
                     help="skip the true-through-Format-A arm")
+    ap.add_argument("--jedi-semantics", action="store_true",
+                    help="evaluate the Format A arms with the evolving-"
+                         "Gaussian effective gradient (d-m)/sigma_o^2(d) "
+                         "through Density.variance verbatim, so their "
+                         "minimizers are the C++ iteration's fixed points "
+                         "rather than the exact MAPs of the exported "
+                         "densities; compare against a run without this "
+                         "flag to isolate the Eq. 9 machinery cost")
     ap.add_argument("--lam-sweep", default=None,
                     help="comma-separated smoothing strengths; runs the "
                          "replicate set at each (exactly paired), prints "
@@ -583,7 +602,8 @@ def main():
         lams = [float(s) for s in a.lam_sweep.split(",")]
         print(f"MAP reference lam sweep: density {a.density} scale "
               f"{a.scale}, n_obs {a.n_obs}, members {a.members}, assumed "
-              f"{a.assumed_error}, {a.replicates} replicates per lam")
+              f"{a.assumed_error}, {a.replicates} replicates per lam"
+              + (", jedi semantics" if a.jedi_semantics else ""))
         cells = []
         for lam in lams:
             rows, skipped = run_batch(a, lam, verbose=False)
@@ -613,7 +633,8 @@ def main():
           f"n_obs {a.n_obs}, members {a.members}, assumed "
           f"{a.assumed_error}, "
           f"{'adaptive' if a.adaptive else f'lam {a.lam:g}'}, "
-          f"{a.replicates} replicates")
+          f"{a.replicates} replicates"
+          + (", jedi semantics" if a.jedi_semantics else ""))
 
     rows, skipped = run_batch(a, a.lam, verbose=True)
 
