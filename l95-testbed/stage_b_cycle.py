@@ -340,6 +340,9 @@ def run(a):
             else:
                 Xa, info = analyze_eda(st["Xf"], y, H, C, a.assumed_error,
                                        rng_p[p])
+            if p == "pff" and a.pff_inflation != 1.0:
+                m_ = Xa.mean(axis=1, keepdims=True)
+                Xa = m_ + a.pff_inflation * (Xa - m_)
             rmse = float(np.sqrt(np.mean((Xa.mean(axis=1) - xt) ** 2)))
             diag[p]["er"].append(er)
             diag[p]["rmse"].append(rmse)
@@ -361,7 +364,9 @@ def run(a):
                 st["xg"], st["pi"], st["sd"] = xg, pi, sd
                 if spec is not None:
                     st["spec"] = spec
-                    if p != "eda" and not a.no_feedback:
+                    ntot = sum(len(o) for o in st["obs"])
+                    if p != "eda" and not a.no_feedback \
+                            and ntot >= a.feedback_min_n:
                         half = 12.0 * max(sd, spec_inj["sample_sigma"],
                                           a.assumed_error)
                         nll_h, dnll_h = spec_nll(spec, half)
@@ -537,6 +542,16 @@ def main():
                          "analysis; estimation still runs on their "
                          "archives (separates provider bias from the "
                          "feedback loop)")
+    ap.add_argument("--pff-inflation", type=float, default=1.0,
+                    help="multiplicative posterior-anomaly inflation for "
+                         "the pff provider; the K sweep priced the "
+                         "componentwise kernel's residual "
+                         "under-dispersion at ~1.05")
+    ap.add_argument("--feedback-min-n", type=int, default=0,
+                    help="adopt the estimated density into the analysis "
+                         "only once the archive holds at least this many "
+                         "innovations; a bad early estimate in the loop "
+                         "is worse than the assumed Gaussian")
     ap.add_argument("--pff-k-sweep", default=None,
                     help="comma-separated particle counts; single-window "
                          "calibration study of the flow against analytic "
