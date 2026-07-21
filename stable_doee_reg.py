@@ -313,12 +313,26 @@ def _hist_var(grid, f):
 
 
 def _make_cache(x_grid, pi, dx, lam, ratio, trim_log):
+    """Trim to a stable interior and differentiate the log density.
+
+    Among the contiguous runs of bins with log density above trim_log, keep
+    the one carrying the most probability MASS, not the longest. The
+    difference matters when the solve fragments: deconvolving with an
+    over-dispersed kernel (reliability ratio 1.24, the first full-size l95
+    run) demands a sharper solution than any density can provide, the QP
+    answers with a picket fence of spikes separated by gaps below the
+    threshold, and the longest run is then a smooth, nearly massless
+    penalty ramp out in a tail -- the run selected held 2.7% of the mass
+    and put the argmax at -2.6 for a truth with mode zero. The most-mass
+    rule keeps the bulk; kept_mass in the cache says how fragmented the
+    solution was, and anything well below one means the estimate should
+    not be used regardless of which run was kept."""
     logp = np.log(pi + 1e-300)
     mask = logp >= trim_log
     padded = np.r_[0, mask, 0]
     d = np.diff(padded.astype(int))
     starts, ends = np.where(d == 1)[0], np.where(d == -1)[0]
-    k = (ends - starts).argmax()
+    k = int(np.argmax([pi[s:e].sum() for s, e in zip(starts, ends)]))
     xg, pin = x_grid[starts[k]:ends[k]], pi[starts[k]:ends[k]]
 
     logp = np.log(pin + 1e-300)
@@ -333,7 +347,8 @@ def _make_cache(x_grid, pi, dx, lam, ratio, trim_log):
              "left_dd": (slopes[1] - slopes[0]) / dx,
              "right_log_slope": slopes[-1], "right_log_int": intercepts[-1],
              "right_dd": (slopes[-1] - slopes[-2]) / dx,
-             "lambda": lam, "resolvability": ratio}
+             "lambda": lam, "resolvability": ratio,
+             "kept_mass": float(pin.sum() * dx)}
     return xg, pin, cache
 
 
@@ -532,7 +547,9 @@ def estimate_noise_pmf_reg(X, Y, n_members, lam=None, lam_grid=None, folds=4,
     padded = np.r_[0, mask, 0]
     d = np.diff(padded.astype(int))
     starts, ends = np.where(d == 1)[0], np.where(d == -1)[0]
-    k = (ends - starts).argmax()
+    # most-mass run, matching _make_cache: see its docstring for the measured
+    # failure the longest-run rule produced
+    k = int(np.argmax([pi[s:e].sum() for s, e in zip(starts, ends)]))
     i_lo, i_hi = starts[k], ends[k]
     xg, pin = x_grid[i_lo:i_hi], pi[i_lo:i_hi]
 
@@ -548,7 +565,8 @@ def estimate_noise_pmf_reg(X, Y, n_members, lam=None, lam_grid=None, folds=4,
              "left_dd": (slopes[1] - slopes[0]) / dx,
              "right_log_slope": slopes[-1], "right_log_int": intercepts[-1],
              "right_dd": (slopes[-1] - slopes[-2]) / dx,
-             "lambda": lam, "resolvability": ratio}
+             "lambda": lam, "resolvability": ratio,
+             "kept_mass": float(pin.sum() * dx)}
     if ratio < 0.5:
         import warnings as _w
         _w.warn(f"observation error is only {ratio:.2f} of the background "

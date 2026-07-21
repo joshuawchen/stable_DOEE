@@ -574,7 +574,8 @@ def main():
     l1 = float(np.abs(p_i / tot - tru).sum() * (fine[1] - fine[0])) \
         if tot > 0 else np.nan
     rep.info(f"lambda {cache['lambda']:.0e}  resolvability "
-             f"{cache['resolvability']:.2f}")
+             f"{cache['resolvability']:.2f}  kept interior mass "
+             f"{100 * cache['kept_mass']:.1f}%")
     rep.info(f"recovered sigma {sd:.3f} (injected sample "
              f"{spec_inj['sample_sigma']:.3f})  exkurt {ku:+.2f} (injected "
              f"sample {spec_inj['sample_excess_kurtosis']:+.2f})  L1 {l1:.3f}")
@@ -648,6 +649,17 @@ def main():
     rep.info(f"mode {spec['mode']:+.3f}  sigma at mode "
              f"{spec['sigma at mode']:.3f}  nfixed {nfixed}")
     export_ok = True
+    # A fragmented solve leaves most of the mass outside the kept interior:
+    # measured with an over-dispersed kernel (ratio 1.24) the QP answers a
+    # sharper-than-realizable target with a picket fence of spikes, and no
+    # choice of kept run makes that assimilable.
+    if cache["kept_mass"] < 0.5:
+        export_ok = False
+        rep.fail(f"only {100 * cache['kept_mass']:.1f}% of the probability "
+                 "mass lies in the kept interior: the solve fragmented "
+                 "(known cause: an over-dispersed ensemble makes the kernel "
+                 "wider than the innovations support; check the reliability "
+                 "ratio)")
     # The gate on the unimodality projection weighs the probability MASS the
     # projection touched, not the bin count: at large sample sizes the kept
     # interior reaches far into the tails, where slope signs wiggle in bins
