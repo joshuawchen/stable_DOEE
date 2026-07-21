@@ -47,6 +47,7 @@ does not move an interior MAP.
 """
 
 import argparse
+import copy
 import sys
 import warnings
 from pathlib import Path
@@ -407,8 +408,9 @@ def replicate(a, seed, quiet):
         v_e = np.array([den_est.variance(float(d)) for d in d_pts])
         lr = 0.5 * np.log(v_e / v_t)
         wpe, wbias = float(np.sqrt(np.mean(lr ** 2))), float(np.mean(lr))
+        wstd = float(np.std(lr))
     else:
-        wpe = wbias = float("nan")
+        wpe = wbias = wstd = float("nan")
 
     # multistart solves -----------------------------------------------------
     starts = [xb, truth]
@@ -418,6 +420,7 @@ def replicate(a, seed, quiet):
            "est_export_ok": not est_bad, "resolvability":
            float(cache.get("resolvability", np.nan)),
            "sig_mode_true": sig_true, "wpe": wpe, "wbias": wbias,
+           "wstd": wstd,
            "sig_mode_est": (float(est_spec["sigma at mode"])
                             if not est_bad else float("nan"))}
     sols = {}
@@ -501,6 +504,46 @@ def ci(vals, nboot=2000, seed=0):
     return float(np.percentile(m, 2.5)), float(np.percentile(m, 97.5))
 
 
+def run_batch(a, lam, verbose=True):
+    """a.replicates replicates at one smoothing strength; the draws depend
+    only on the seeds, so batches at different lam are exactly paired."""
+    b = copy.copy(a)
+    b.lam = lam
+    rows, skipped = [], 0
+    for r in range(b.replicates):
+        out, bad = replicate(b, b.seed + 100 * r, quiet=True)
+        if bad:
+            skipped += 1
+            print(f"  rep {r}: DOEE export rejected "
+                  f"({bad[0]}); replicate skipped")
+            continue
+        rows.append(out)
+        if not verbose:
+            continue
+        basins = "/".join(str(out.get(f"basins_{n}", "-"))
+                          for n in ("gaussian", "estimated", "true",
+                                    "true-fmt"))
+        print(f"  rep {r}: doee sd {out['sd']:.3f} L1 {out['l1']:.3f} "
+              f"sig@m {out['sig_mode_est']:.2f}/{out['sig_mode_true']:.2f} "
+              f"wpe {out['wpe']:.2f}/{out['wbias']:+.2f}/{out['wstd']:.2f}  "
+              f"rmse bg {out['rmse_bg']:.4f}  "
+              f"gauss {out['rmse_gaussian']:.4f}  "
+              f"est {out['rmse_estimated']:.4f}  "
+              + (f"true-fmt {out['rmse_true-fmt']:.4f}  "
+                 if 'rmse_true-fmt' in out else "")
+              + f"regret g {out['regret_gaussian']:.5f} "
+              f"e {out['regret_estimated']:.5f}  basins {basins}")
+        neg = [k for k in out if k.startswith("regret_")
+               and out[k] < -1e-9]
+        if neg:
+            print(f"       WARNING negative regret {neg}: the true-arm "
+                  "multistart likely missed a basin; add --extra-starts")
+        conv = [k for k in out if k.startswith("converged_") and not out[k]]
+        if conv:
+            print(f"       WARNING not converged: {conv}")
+    return rows, skipped
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -522,12 +565,49 @@ def main():
     ap.add_argument("--extra-starts", type=int, default=3)
     ap.add_argument("--no-true-fmt", action="store_true",
                     help="skip the true-through-Format-A arm")
+    ap.add_argument("--lam-sweep", default=None,
+                    help="comma-separated smoothing strengths; runs the "
+                         "replicate set at each (exactly paired), prints "
+                         "regret(lam) with the weight-profile scatter, "
+                         "and tests whether scatter predicts regret")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
         return selftest()
+    if a.adaptive and a.lam_sweep:
+        ap.error("--lam-sweep varies the knob --adaptive removes")
     if a.adaptive:
         a.lam = None
+
+    if a.lam_sweep:
+        lams = [float(s) for s in a.lam_sweep.split(",")]
+        print(f"MAP reference lam sweep: density {a.density} scale "
+              f"{a.scale}, n_obs {a.n_obs}, members {a.members}, assumed "
+              f"{a.assumed_error}, {a.replicates} replicates per lam")
+        cells = []
+        for lam in lams:
+            rows, skipped = run_batch(a, lam, verbose=False)
+            if not rows:
+                print(f"  lam {lam:g}: no completed replicates")
+                continue
+            re_ = [o["regret_estimated"] for o in rows]
+            rg_ = [o["regret_gaussian"] for o in rows]
+            ws_ = [o["wstd"] for o in rows]
+            l1_ = [o["l1"] for o in rows]
+            lo, hi = ci(re_)
+            print(f"  lam {lam:g}: est regret {np.mean(re_):.5f} "
+                  f"CI [{lo:.5f}, {hi:.5f}]  wstd {np.mean(ws_):.2f}  "
+                  f"L1 {np.mean(l1_):.2f}  gauss regret {np.mean(rg_):.5f}"
+                  + (f"  ({skipped} skipped)" if skipped else ""))
+            cells += [(o["wstd"], o["regret_estimated"]) for o in rows]
+        if len(cells) >= 3:
+            wv = np.array([c[0] for c in cells])
+            rv = np.array([c[1] for c in cells])
+            if wv.std() > 0 and rv.std() > 0:
+                print(f"  across all {len(cells)} cells: "
+                      f"corr(weight-profile scatter, est regret) "
+                      f"{float(np.corrcoef(wv, rv)[0, 1]):+.2f}")
+        return 0
 
     print(f"MAP reference: density {a.density} scale {a.scale}, "
           f"n_obs {a.n_obs}, members {a.members}, assumed "
@@ -535,36 +615,7 @@ def main():
           f"{'adaptive' if a.adaptive else f'lam {a.lam:g}'}, "
           f"{a.replicates} replicates")
 
-    rows, skipped = [], 0
-    for r in range(a.replicates):
-        out, bad = replicate(a, a.seed + 100 * r, quiet=True)
-        if bad:
-            skipped += 1
-            print(f"  rep {r}: DOEE export rejected "
-                  f"({bad[0]}); replicate skipped")
-            continue
-        rows.append(out)
-        basins = "/".join(str(out.get(f"basins_{n}", "-"))
-                          for n in ("gaussian", "estimated", "true",
-                                    "true-fmt"))
-        print(f"  rep {r}: doee sd {out['sd']:.3f} L1 {out['l1']:.3f} "
-              f"sig@m {out['sig_mode_est']:.2f}/{out['sig_mode_true']:.2f} "
-              f"wpe {out['wpe']:.2f}/{out['wbias']:+.2f}  "
-              f"rmse bg {out['rmse_bg']:.4f}  "
-              f"gauss {out['rmse_gaussian']:.4f}  "
-              f"est {out['rmse_estimated']:.4f}  "
-              + (f"true-fmt {out['rmse_true-fmt']:.4f}  "
-                 if 'rmse_true-fmt' in out else "")
-              + f"regret g {out['regret_gaussian']:.5f} "
-              f"e {out['regret_estimated']:.5f}  basins {basins}")
-        neg = [k for k in out if k.startswith("regret_")
-               and out[k] < -1e-9]
-        if neg:
-            print(f"       WARNING negative regret {neg}: the true-arm "
-                  "multistart likely missed a basin; add --extra-starts")
-        conv = [k for k in out if k.startswith("converged_") and not out[k]]
-        if conv:
-            print(f"       WARNING not converged: {conv}")
+    rows, skipped = run_batch(a, a.lam, verbose=True)
 
     if not rows:
         print("no completed replicates")
@@ -608,17 +659,20 @@ def main():
                                    / o["sig_mode_true"])) for o in rows])
         wp_ = np.array([o["wpe"] for o in rows])
         wb_ = np.array([o["wbias"] for o in rows])
+        ws_ = np.array([o["wstd"] for o in rows])
         if np.all(np.isfinite(sm_)) and re_.std() > 0 and l1_.std() > 0 \
-                and sm_.std() > 0 and wp_.std() > 0:
+                and sm_.std() > 0 and wp_.std() > 0 and ws_.std() > 0:
             c_l1 = float(np.corrcoef(re_, l1_)[0, 1])
             c_sm = float(np.corrcoef(re_, sm_)[0, 1])
             c_wp = float(np.corrcoef(re_, wp_)[0, 1])
             c_wb = float(np.corrcoef(re_, wb_)[0, 1])
+            c_ws = float(np.corrcoef(re_, ws_)[0, 1])
             print(f"  what predicts the estimated arm's regret: corr with "
                   f"density L1 {c_l1:+.2f}, with |log sigma-at-mode "
                   f"error| {c_sm:+.2f}, with weight-profile rms "
-                  f"{c_wp:+.2f}, with signed weight bias {c_wb:+.2f} "
-                  f"(negative bias = overweighting)")
+                  f"{c_wp:+.2f}, with signed weight bias {c_wb:+.2f}, "
+                  f"with weight-profile SCATTER {c_ws:+.2f} (scatter = "
+                  f"shape error in log sigma_o(d); bias = pure rescaling)")
     return 0
 
 
