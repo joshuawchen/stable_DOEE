@@ -671,11 +671,17 @@ def main():
                  f"{100 * mass_fixed:.2f}% of the probability mass "
                  f"(gate {a.max_nfixed}%): the estimate is too noisy to "
                  "assimilate")
-    # The mode must sit near zero for an observation-error density: the
-    # departures were not bias corrected toward anything else, and the Jo
-    # scalar the C++ reports is 0.5 <d, g(d)>, which equals the
-    # evolving-Gaussian value 0.5 <d - m, g(d)> only near m = 0 -- a far
-    # mode makes the reported JoJc negative and oops refuses to minimize.
+    # The mode gate is TESTBED POLICY, not a fundamental property: under the
+    # unbiased-background anchor the estimator recovers genuinely shifted
+    # error densities correctly (verified: a +0.6-mode injection comes back
+    # at +0.54 with unbiased members). Every Stage A injection has its mode
+    # at zero, so a far recovered mode is a truth-check failure here -- the
+    # gauge says it measures ensemble bias, and the bias line above bounds
+    # that -- and, separately, the Jo scalar the C++ reports is
+    # 0.5 <d, g(d)>, which equals the evolving-Gaussian value
+    # 0.5 <d - m, g(d)> only near m = 0, so a far mode also makes the
+    # reported JoJc negative and oops refuses to minimize until the fork
+    # carries the (d - m) fix.
     if abs(spec["mode"]) > 0.5 * max(sd, 1e-12):
         export_ok = False
         rep.fail(f"exported mode {spec['mode']:+.3f} sits "
