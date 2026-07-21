@@ -477,6 +477,11 @@ def main():
                          "the first record ensemble the flat criterion plus "
                          "the calibrated default under-smoothed at 347 bins "
                          "(sigma at mode 0.24 vs 0.50); lam 30 restored it")
+    ap.add_argument("--adaptive", action="store_true",
+                    help="estimate with estimate_adaptive (cross-split "
+                         "one-SE smoothing selection); refuses --lam "
+                         "because there is no knob to set, which is the "
+                         "point")
     ap.add_argument("--oracle-density", action="store_true",
                     help="export the injected density instead of the "
                          "estimate; separates estimation quality from the "
@@ -491,6 +496,9 @@ def main():
 
     if bool(a.build) == bool(a.synthetic):
         ap.error("exactly one of --build or --synthetic is required")
+    if a.adaptive and a.lam is not None:
+        ap.error("--adaptive selects its own smoothing; --lam has no "
+                 "meaning under it")
 
     rep = Report(strict=a.strict)
     real = a.build is not None
@@ -606,14 +614,22 @@ def main():
              "number and its mode should be read net of it")
 
     # ---- 5. estimate the density -------------------------------------------
-    rep.head("DOEE, third-difference regularized, lambda by cross-validation")
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        grid, f_d, f_k, innov = R.histograms_from_ensemble(obs, hofx,
-                                                           seed=a.seed + 2)
-        groups = R.innovation_groups(len(obs), hofx.shape[1])
-        xg, pi, cache = R.estimate_from_histograms(grid, f_d, f_k, lam=a.lam,
-                                                   innov=innov, groups=groups)
+    if a.adaptive:
+        rep.head("DOEE, adaptive: whitened data term, cross-split one-SE mu")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            xg, pi, cache = R.estimate_adaptive_from_ensemble(
+                obs, hofx, seed=a.seed + 2)
+    else:
+        rep.head("DOEE, third-difference regularized, lambda by "
+                 "cross-validation")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            grid, f_d, f_k, innov = R.histograms_from_ensemble(
+                obs, hofx, seed=a.seed + 2)
+            groups = R.innovation_groups(len(obs), hofx.shape[1])
+            xg, pi, cache = R.estimate_from_histograms(
+                grid, f_d, f_k, lam=a.lam, innov=innov, groups=groups)
     sd, ku = moments_on(xg, pi)
     fine = np.arange(-10.0, 10.0001, 0.02)
     tru = analytic_density(inj, fine)
@@ -621,9 +637,15 @@ def main():
     tot = p_i.sum() * (fine[1] - fine[0])
     l1 = float(np.abs(p_i / tot - tru).sum() * (fine[1] - fine[0])) \
         if tot > 0 else np.nan
-    rep.info(f"lambda {cache['lambda']:.0e}  resolvability "
-             f"{cache['resolvability']:.2f}  kept interior mass "
-             f"{100 * cache['kept_mass']:.1f}%")
+    if a.adaptive:
+        rep.info(f"mu {cache['lambda']:.1e} (cross-split argmin "
+                 f"{cache['mu_argmin']:.1e})  resolvability "
+                 f"{cache['resolvability']:.2f}  kept interior mass "
+                 f"{100 * cache['kept_mass']:.1f}%")
+    else:
+        rep.info(f"lambda {cache['lambda']:.0e}  resolvability "
+                 f"{cache['resolvability']:.2f}  kept interior mass "
+                 f"{100 * cache['kept_mass']:.1f}%")
     rep.info(f"recovered sigma {sd:.3f} (injected sample "
              f"{spec_inj['sample_sigma']:.3f})  exkurt {ku:+.2f} (injected "
              f"sample {spec_inj['sample_excess_kurtosis']:+.2f})  L1 {l1:.3f}")
@@ -672,7 +694,12 @@ def main():
             warnings.simplefilter("ignore")
             floor = NC.null_floor(sigma_o_est, sigma_b_est, len(obs),
                                   hofx.shape[1], trials=a.floor_trials,
-                                  lam=(a.lam if a.lam is not None else 1e-1))
+                                  lam=(1e-1 if a.adaptive or a.lam is None
+                                       else a.lam))
+        if a.adaptive:
+            rep.info("the floor is calibrated with the legacy instrument "
+                     "at lam 1e-1: indicative for the adaptive estimate, "
+                     "whose own null calibration is future work")
         rep.info(f"sigma_o~{sigma_o_est:.3f} sigma_b~{sigma_b_est:.3f}  floor "
                  f"mean {floor['kurtosis_mean']:+.2f}  p95 "
                  f"{floor['kurtosis_p95']:+.2f}")
