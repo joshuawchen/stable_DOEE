@@ -372,10 +372,9 @@ def replicate(a, seed, quiet):
     tot = p_i.sum() * 0.02
     l1 = float(np.abs(p_i / tot - tru).sum() * 0.02) if tot > 0 else np.nan
 
-    # arms ------------------------------------------------------------------
+    # arms needing the Newton solve; every Gaussian baseline is closed
+    # form below, so "gaussian" is no longer a Newton arm ------------------
     arms = {}
-    arms["gaussian"] = (*analytic_nll({"kind": "gaussian",
-                                       "sigma": a.assumed_error}), 1e-5)
     arms["true"] = (*analytic_nll(spec_inj), 1e-5)
 
     gaussian_tails(cache, xg, pi, sd, Quiet(not quiet),
@@ -459,6 +458,42 @@ def replicate(a, seed, quiet):
         d = sols[name] - xt
         out[f"rmse_{name}"] = float(np.sqrt(np.mean(d ** 2)))
         out[f"regret_{name}"] = (j_true(sols[name]) - jt) / a.n_obs
+
+    # Gaussian baselines. Gaussian likelihood with a Gaussian prior makes
+    # the MAP closed form and unique, so these are exact and need no
+    # multistart. The ladder: assumed (status quo), matched (perfect
+    # variance-only estimation), var (the variance of the DOEE estimate --
+    # variance from the same pipeline, isolating the value of SHAPE), and
+    # best (per-window oracle-tuned sigma, an upper bound on every
+    # Gaussian anyone could tune; whatever it still pays is recoverable
+    # only by shape).
+    HtH = H.T @ H
+    Hty = H.T @ (y - H @ xb)
+
+    def gauss_map(sig):
+        A = Cinv + HtH / sig ** 2
+        return xb + np.linalg.solve(A, Hty / sig ** 2)
+
+    def add_gauss(tag, sig):
+        if not (np.isfinite(sig) and sig > 0):
+            return
+        xg_ = gauss_map(sig)
+        dg_ = xg_ - xt
+        out[f"rmse_{tag}"] = float(np.sqrt(np.mean(dg_ ** 2)))
+        out[f"regret_{tag}"] = (j_true(xg_) - jt) / a.n_obs
+        out[f"sig_{tag}"] = float(sig)
+
+    add_gauss("gauss-assumed", a.assumed_error)
+    add_gauss("gauss-matched", spec_inj["sample_sigma"])
+    add_gauss("gauss-var", sd)
+    sm_pop = spec_inj["sample_sigma"]
+    sgrid = np.geomspace(0.3 * sm_pop, 3.0 * sm_pop, 40)
+    regs = [j_true(gauss_map(float(s))) for s in sgrid]
+    k = int(np.argmin(regs))
+    fine_s = np.linspace(sgrid[max(k - 1, 0)],
+                         sgrid[min(k + 1, sgrid.size - 1)], 25)
+    regs_f = [j_true(gauss_map(float(s))) for s in fine_s]
+    add_gauss("gauss-best", float(fine_s[int(np.argmin(regs_f))]))
     return out, []
 
 
@@ -493,13 +528,14 @@ def selftest():
         junction_frac, extra_starts, no_true_fmt = 0.98, 2, False
     out, bad = replicate(A0, 11, quiet=True)
     assert not bad, f"null-case export rejected: {bad[:1]}"
-    print(f"null case: rmse_gaussian {out['rmse_gaussian']:.2e} "
-          f"(gaussian arm vs true arm; should be ~0), "
+    print(f"null case: rmse_gauss-assumed "
+          f"{out['rmse_gauss-assumed']:.2e} "
+          f"(closed-form Gaussian arm vs Newton true arm; should be ~0), "
           f"rmse_estimated {out.get('rmse_estimated', np.nan):.4f}, "
-          f"regret_gaussian {out['regret_gaussian']:.2e}")
-    assert out["rmse_gaussian"] < 1e-6, \
+          f"regret_gauss-assumed {out['regret_gauss-assumed']:.2e}")
+    assert out["rmse_gauss-assumed"] < 1e-5, \
         "gaussian and true arms differ in the null case"
-    assert out["regret_gaussian"] < 1e-10, \
+    assert out["regret_gauss-assumed"] < 1e-9, \
         "nonzero true-cost regret in the null case"
     print("selftest passed")
     return 0
@@ -532,18 +568,19 @@ def run_batch(a, lam, verbose=True):
         if not verbose:
             continue
         basins = "/".join(str(out.get(f"basins_{n}", "-"))
-                          for n in ("gaussian", "estimated", "true",
-                                    "true-fmt"))
+                          for n in ("estimated", "true", "true-fmt"))
         print(f"  rep {r}: doee sd {out['sd']:.3f} L1 {out['l1']:.3f} "
               f"sig@m {out['sig_mode_est']:.2f}/{out['sig_mode_true']:.2f} "
               f"wpe {out['wpe']:.2f}/{out['wbias']:+.2f}/{out['wstd']:.2f}  "
-              f"rmse bg {out['rmse_bg']:.4f}  "
-              f"gauss {out['rmse_gaussian']:.4f}  "
-              f"est {out['rmse_estimated']:.4f}  "
-              + (f"true-fmt {out['rmse_true-fmt']:.4f}  "
-                 if 'rmse_true-fmt' in out else "")
-              + f"regret g {out['regret_gaussian']:.5f} "
-              f"e {out['regret_estimated']:.5f}  basins {basins}")
+              f"regret gA {out['regret_gauss-assumed']:.4f} "
+              f"gM {out['regret_gauss-matched']:.4f} "
+              f"gV {out.get('regret_gauss-var', float('nan')):.4f} "
+              f"gB {out['regret_gauss-best']:.4f}"
+              f"({out['sig_gauss-best']:.2f}) "
+              f"e {out['regret_estimated']:.4f}"
+              + (f" tf {out['regret_true-fmt']:.4f}"
+                 if 'regret_true-fmt' in out else "")
+              + f"  basins {basins}")
         neg = [k for k in out if k.startswith("regret_")
                and out[k] < -1e-9]
         if neg:
@@ -611,13 +648,15 @@ def main():
                 print(f"  lam {lam:g}: no completed replicates")
                 continue
             re_ = [o["regret_estimated"] for o in rows]
-            rg_ = [o["regret_gaussian"] for o in rows]
+            rb_ = [o["regret_gauss-best"] for o in rows]
+            rm_ = [o["regret_gauss-matched"] for o in rows]
             ws_ = [o["wstd"] for o in rows]
             l1_ = [o["l1"] for o in rows]
             lo, hi = ci(re_)
             print(f"  lam {lam:g}: est regret {np.mean(re_):.5f} "
                   f"CI [{lo:.5f}, {hi:.5f}]  wstd {np.mean(ws_):.2f}  "
-                  f"L1 {np.mean(l1_):.2f}  gauss regret {np.mean(rg_):.5f}"
+                  f"L1 {np.mean(l1_):.2f}  gaussBest {np.mean(rb_):.5f}  "
+                  f"gaussMatched {np.mean(rm_):.5f}"
                   + (f"  ({skipped} skipped)" if skipped else ""))
             cells += [(o["wstd"], o["regret_estimated"]) for o in rows]
         if len(cells) >= 3:
@@ -643,31 +682,38 @@ def main():
         return 1
     print(f"\nsummary over {len(rows)} replicates"
           + (f" ({skipped} skipped on export gates)" if skipped else ""))
-    for name in ("gaussian", "estimated", "true-fmt"):
+    for name in ("gauss-assumed", "gauss-matched", "gauss-var",
+                 "gauss-best", "estimated", "true-fmt"):
         key = f"rmse_{name}"
         if key not in rows[0]:
             continue
         v = [o[key] for o in rows]
         lo, hi = ci(v)
-        print(f"  rmse to true MAP, {name:9s} mean {np.mean(v):.4f}  "
+        print(f"  rmse to true MAP, {name:13s} mean {np.mean(v):.4f}  "
               f"CI [{lo:.4f}, {hi:.4f}]")
-    for name in ("gaussian", "estimated", "true-fmt"):
+    for name in ("gauss-assumed", "gauss-matched", "gauss-var",
+                 "gauss-best", "estimated", "true-fmt"):
         key = f"regret_{name}"
         if key not in rows[0]:
             continue
         v = [o[key] for o in rows]
         lo, hi = ci(v)
-        print(f"  true-cost regret, {name:9s} mean {np.mean(v):.5f} "
+        print(f"  true-cost regret, {name:13s} mean {np.mean(v):.5f} "
               f"nats/ob  CI [{lo:.5f}, {hi:.5f}]")
-    d = [o["rmse_gaussian"] - o["rmse_estimated"] for o in rows]
-    lo, hi = ci(d)
-    print(f"  paired rmse margin (gaussian - estimated): mean "
-          f"{np.mean(d):+.4f}  CI [{lo:+.4f}, {hi:+.4f}]  "
-          f"({'estimated closer to the true MAP' if np.mean(d) > 0 else 'gaussian closer to the true MAP'})")
-    dr = [o["regret_gaussian"] - o["regret_estimated"] for o in rows]
-    lo, hi = ci(dr)
-    print(f"  paired regret margin (gaussian - estimated): mean "
-          f"{np.mean(dr):+.5f} nats/ob  CI [{lo:+.5f}, {hi:+.5f}]")
+    for tag, base in (("assumed", "gauss-assumed"),
+                      ("oracle-tuned", "gauss-best")):
+        dr = [o[f"regret_{base}"] - o["regret_estimated"] for o in rows]
+        lo, hi = ci(dr)
+        print(f"  paired regret margin ({tag} Gaussian - estimated): mean "
+              f"{np.mean(dr):+.5f} nats/ob  CI [{lo:+.5f}, {hi:+.5f}]")
+    gb = float(np.mean([o["regret_gauss-best"] for o in rows]))
+    tf = float(np.mean([o.get("regret_true-fmt", 0.0) for o in rows]))
+    ee = float(np.mean([o["regret_estimated"] for o in rows]))
+    frac = 100.0 * (gb - ee) / max(gb - tf, 1e-12)
+    print(f"  the Gaussian ceiling: the per-window oracle-tuned Gaussian "
+          f"still pays {gb:.5f} nats/ob that only SHAPE can recover "
+          f"(true-shape floor {tf:.5f}); this estimate recovers "
+          f"{frac:.0f}% of that gap")
     if "rmse_true-fmt" in rows[0]:
         v = [o["rmse_true-fmt"] for o in rows]
         print(f"  Format A representation bound: true-fmt sits "
