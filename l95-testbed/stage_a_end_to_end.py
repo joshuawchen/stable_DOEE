@@ -351,7 +351,8 @@ def true_log_density(spec, x):
     return np.log(np.maximum(f, 1e-300))
 
 
-def save_density_plot(path, obs, hofx, xg, pi, inj, seed, adaptive):
+def save_density_plot(path, obs, hofx, xg, pi, inj, seed, adaptive,
+                      cache=None):
     """Three-panel picture of the run: the recovered density against the
     injected truth (linear and log -- the log panel is where tail lobes
     and satellite maxima are visible), and the innovation space showing
@@ -388,6 +389,21 @@ def save_density_plot(path, obs, hofx, xg, pi, inj, seed, adaptive):
     ax[0].legend(frameon=False)
     ax[1].semilogy(grid, np.maximum(tru, 1e-7), "k-", lw=1.8)
     ax[1].semilogy(grid, np.maximum(p, 1e-7), "-", color="tab:red", lw=1.4)
+    if cache is not None:
+        for edge, slope, dd, sgn in (
+                (cache["stable_min"], cache["left_log_slope"],
+                 cache["left_dd"], -1.0),
+                (cache["stable_max"], cache["right_log_slope"],
+                 cache["right_dd"], +1.0)):
+            j = int(np.argmin(np.abs(grid - edge)))
+            xt = grid[(grid - edge) * sgn >= 0]
+            if xt.size > 1 and p[j] > 0:
+                lt = np.log(p[j]) + slope * (xt - edge) \
+                    + 0.5 * dd * (xt - edge) ** 2
+                ax[1].semilogy(xt, np.maximum(np.exp(lt), 1e-7), "--",
+                               color="tab:blue", lw=1.2,
+                               label="exported tail" if sgn > 0 else None)
+        ax[1].legend(frameon=False, fontsize=8)
     ax[1].set_ylim(1e-6, None)
     ax[1].set_title("noise density, log scale (tails and satellites)")
     ax[1].set_xlabel("obs error")
@@ -405,6 +421,54 @@ def save_density_plot(path, obs, hofx, xg, pi, inj, seed, adaptive):
     fig.savefig(path, dpi=130)
     plt.close(fig)
     return path
+
+
+def gaussian_tails(cache, xg, pi, sd, rep, mass_frac=0.92,
+                   sigma_widest=3.0):
+    """Replace the two-bin tail curvatures with windowed fits and enforce
+    at-least-Gaussian decay in the export.
+
+    The cache's left_dd/right_dd are finite differences over the two
+    outermost trimmed bins -- maximally noisy -- and the old policy
+    clamped any wrong sign to -1e-12, so the assimilated density had
+    EXPONENTIAL tails by convention whatever the truth did. Here the
+    log-density curvature is fit per side over the outer (1 - mass_frac)
+    of probability mass, and the exported curvature is
+        dd = clip(dd_fit, -1/(0.3 sd)^2, -1/(sigma_widest * sd)^2)
+    so beyond the data every tail closes at least as fast as a Gaussian
+    of sigma_widest recovered sigmas (and no faster than 0.3 of one,
+    against spiky edge fits). Tails the data measure as thinner keep
+    their measured curvature; this is export policy, not estimation --
+    the recovered density itself is untouched."""
+    lo, hi = cache["stable_min"], cache["stable_max"]
+    sel = (xg >= lo) & (xg <= hi) & (pi > 0)
+    x_in, p_in = xg[sel], pi[sel]
+    dxg = xg[1] - xg[0]
+    c = np.cumsum(p_in) * dxg
+    c = c / max(c[-1], 1e-300)
+    dd_cap = -1.0 / (sigma_widest * max(sd, 1e-6)) ** 2
+    dd_flr = -1.0 / (0.3 * max(sd, 1e-6)) ** 2
+    for side, mask in (("left_dd", c <= 1.0 - mass_frac),
+                       ("right_dd", c >= mass_frac)):
+        xs, ps = x_in[mask], p_in[mask]
+        if xs.size < 6:
+            k = min(8, x_in.size)
+            xs, ps = (x_in[:k], p_in[:k]) if side == "left_dd"                 else (x_in[-k:], p_in[-k:])
+        dd_fit = np.nan
+        if xs.size >= 3:
+            try:
+                dd_fit = 2.0 * float(np.polyfit(xs, np.log(ps), 2)[0])
+            except Exception:
+                pass
+        dd = dd_fit if np.isfinite(dd_fit) else dd_cap
+        dd = float(np.clip(dd, dd_flr, dd_cap))
+        sig_t = float(np.sqrt(-1.0 / dd))
+        rep.info(f"{side}: fitted log-curvature "
+                 f"{dd_fit if np.isfinite(dd_fit) else float('nan'):+.3f} "
+                 f"over {xs.size} outer bins -> exported {dd:+.3f} "
+                 f"(tail sigma {sig_t:.2f}; widest allowed "
+                 f"{sigma_widest:.0f} x recovered sd {sd:.2f})")
+        cache[side] = dd
 
 
 def oracle_cache(spec_inj):
@@ -723,10 +787,6 @@ def main():
              dx=cache["dx"], stable_min=cache["stable_min"],
              stable_max=cache["stable_max"], lam=cache["lambda"],
              resolvability=cache["resolvability"])
-    png = save_density_plot(data / "testbed_density.png", obs, hofx, xg, pi,
-                            inj, a.seed + 2, a.adaptive)
-    rep.info(f"density plot written to {png}" if png else
-             "no density plot: matplotlib is not installed in this python")
     dxg = xg[1] - xg[0]
     tot_pi = max(float(pi.sum() * dxg), 1e-300)
     interior = (pi[1:-1] >= pi[:-2]) & (pi[1:-1] >= pi[2:])
@@ -784,14 +844,11 @@ def main():
         xg = cache["stable_min"] + np.arange(len(cache["slopes_log"])) \
             * cache["dx"]
         pi = analytic_density(spec_inj, xg)
-    clamped = 0
-    for side in ("left_dd", "right_dd"):
-        if cache[side] > 0:
-            cache[side] = -1e-12
-            clamped += 1
-    if clamped:
-        rep.info(f"{clamped} tail curvature(s) clamped to -1e-12 to keep the "
-                 "tails integrable (finalize_pdf_cache convention)")
+    gaussian_tails(cache, np.asarray(xg), np.asarray(pi), sd, rep)
+    png = save_density_plot(data / "testbed_density.png", obs, hofx, xg, pi,
+                            inj, a.seed + 2, a.adaptive, cache=cache)
+    rep.info(f"density plot written to {png}" if png else
+             "no density plot: matplotlib is not installed in this python")
     spec, nfixed = DY.to_spec(cache, save_sigma=True)
     rep.info(f"mode {spec['mode']:+.3f}  sigma at mode "
              f"{spec['sigma at mode']:.3f}  nfixed {nfixed}")
