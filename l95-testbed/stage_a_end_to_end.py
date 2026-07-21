@@ -589,7 +589,12 @@ def main():
 
     # ---- 4. collect and check the ensemble ---------------------------------
     rep.head("collect member H(x) and check reliability against the truth")
-    pattern = str(data / "testbed_mem*.obt")
+    # exactly this run's members: a wildcard also sweeps in stale files from
+    # earlier experiments at other sizes, and collect() rightly refuses the
+    # mixture. Real-mode members are numbered from 1, synthetic from 0.
+    base = 1 if real else 0
+    pattern = [str(data / f"testbed_mem{k:03d}.obt")
+               for k in range(base, base + a.members)]
     obs, hofx, meta = CE.collect(pattern)
     rep.info(f"{meta['members']} members, {meta['n_obs']} observations, "
              f"mean background spread {meta['mean_background_spread']:.3f}")
