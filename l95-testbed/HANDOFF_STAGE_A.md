@@ -106,14 +106,44 @@ destroyed; density-space criteria cannot distinguish agreeing-on-signal
 from agreeing-on-smoothness. Proxy cases misled twice; the next design
 must be measured against the record member files on the VM first.
 
+## The obs-density regime finding (2026-07-21, later)
+
+The big-observations run (obs-density 1600, members 50, n=4800,
+reliability 0.97) reframed the margin question. All runs paired on the
+same fresh ensemble; regret in nats/ob:
+
+    regime               control   oracle    est lam30   est lam100
+    sparse (400/var30)   0.0494    0.0290    0.0462      --
+    dense (1600/var120)  0.0187    0.0124    0.0221      0.0225
+
+Dense observations Gaussianize the effective problem: the control's own
+regret fell 2.6x and the ABSOLUTE oracle margin compressed 3x (0.0204 ->
+0.0063) even though the RELATIVE margin barely moved (41% -> 34%).
+Meanwhile the estimate genuinely improved with 4x the draws -- at lam
+100 (compensating the ~490-bin dilution of the penalty) the recovery is
+the cleanest ever: L1 0.135, sigma +0.9%, sigma at mode 0.493 vs 0.500,
+zero lobes, zero projections, EvolvingSigma 0.37-2.49 with no shelves --
+and it STILL trails the control by ~0.004. So realizable estimation
+error has a floor (~0.010 nats here, dominated by fine sigma(d) profile
+errors: the near-mode dip to 0.37 vs the true 0.5, and mild kurtosis
+undershoot), and when the available margin compresses below that floor,
+the sign flips regardless of density quality. Conclusion: the method's
+realizable value concentrates in the obs-sparse regime, which is where
+the win stands and where much of real DA lives. The center-sharpening
+problem from the record ensemble is SOLVED by more observations (sigma
+at mode 0.514 at lam 30, 0.493 at lam 100); the lam-dilution rule of
+thumb held (30 at 347 bins ~ 100+ at 490 bins).
+
 ## Queue, in order
 
-1. Big-observations run (margin growth; also shrinks the noise that makes
-   selection hard): `--obs-density 1600 --members 50 --lam 30`, fresh
-   ensemble. 4x the independent draws, attacks all residual error terms,
-   halves the per-cycle CI.
+1. Obs-density sweep, the regime map and likely the paper figure:
+   densities 200/400/800/1600 x {oracle, lam 30} at members 50 (the 1600
+   pair is done; 400 needs a members-50 rerun for homogeneity). The
+   margin-vs-density curve from the oracle column is estimate-free; the
+   realizable column shows where the estimation floor crosses it.
 2. Lambda-selection research, starting with a measurement script on the
-   VM producing criterion curves on the real member files.
+   VM producing criterion curves on the real member files. Note the
+   measured dilution anchor: lam 30 at 347 bins ~ lam 100+ at 490 bins.
 3. oops fork, next build session: the C++ consumer of
    `jedi_export/fixtures.json` (8 cases, C++ key names; the assimilation
    unit tests take `test/testinput/empty.yaml` via TestEnvironment, so a
