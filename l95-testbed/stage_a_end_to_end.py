@@ -671,8 +671,11 @@ def main():
                         + (np.arange(len(cache["slopes_log"])) + 0.5)
                         * cache["dx"])
     s_raw = np.asarray(cache["slopes_log"], float)
-    bad_bins = ((c_bins < spec["mode"]) & (s_raw < 0)) \
-        | ((c_bins > spec["mode"]) & (s_raw > 0))
+    # the spec is exported in H(x) - y; the cache lives in y - H(x), so
+    # reflect the mode back before classifying the cache's slopes
+    mode_d = -spec["mode"]
+    bad_bins = ((c_bins < mode_d) & (s_raw < 0)) \
+        | ((c_bins > mode_d) & (s_raw > 0))
     p_bins = np.interp(c_bins, xg, pi, left=0.0, right=0.0)
     mass_fixed = float(p_bins[bad_bins].sum()
                        / max(p_bins.sum(), 1e-300))

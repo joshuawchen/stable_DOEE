@@ -58,10 +58,29 @@ spec, nf = D.to_spec(cache, enforce="monotone")
 check("monotone repairs exactly the bad bins", nf == 2)
 check("repaired density valid everywhere", not D.check(spec))
 sl = np.asarray(spec["log slopes"])
-cc = D._centers(cache)
+# centers from the spec: after reflection the spec is in H(x) - y
+cc = spec["stable min"] + (np.arange(len(sl)) + 0.5) * spec["grid spacing"]
 check("repaired density is unimodal",
       not ((((cc < spec["mode"]) & (sl < 0))
             | ((cc > spec["mode"]) & (sl > 0))).any()))
+
+# asymmetric density: the export must be the reflection into H(x) - y,
+# score_v(v) = slope_d(-v). Steep left flank, shallow right, mode at +0.5.
+dxa, loa, hia = 0.25, -5.0, 5.0
+na = int(round((hia - loa) / dxa))
+ca = loa + (np.arange(na) + 0.5) * dxa
+sa = np.where(ca < 0.5, -2.0 * (ca - 0.5), -0.5 * (ca - 0.5))
+cache_a = dict(dx=dxa, stable_min=loa, stable_max=hia, slopes_log=sa,
+               left_log_slope=float(sa[0]), left_dd=-0.05,
+               right_log_slope=float(sa[-1]), right_dd=-0.05)
+spec_a, nfa = D.to_spec(cache_a)
+fa = D.Density(spec_a)
+check("asymmetric export: no repairs needed", nfa == 0)
+check("asymmetric export: mode negated", abs(spec_a["mode"] + 0.5) < 0.15)
+check("asymmetric export: score is the reflection",
+      all(abs(fa.score(-float(ca[j])) - float(sa[j])) < 1e-12
+          for j in (2, 7, 30, 37)))
+check("asymmetric export: valid everywhere", not D.check(spec_a))
 
 # tails that grow without bound must be refused
 bad, _ = make()

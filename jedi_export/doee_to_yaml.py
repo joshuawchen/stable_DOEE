@@ -150,12 +150,22 @@ def enforce_unimodal(slopes, centers, mode, how="monotone"):
 
 # --------------------------------------------------------------------------
 def to_spec(cache, *, mode=None, enforce="monotone", sigma_floor=1.0e-3,
-            mode_window=None, save_sigma=False, sigma_group="EvolvingSigma"):
+            mode_window=None, save_sigma=False, sigma_group="EvolvingSigma",
+            reflect=True):
     """Build the `non gaussian cost` mapping from a finalized stable_DOEE cache.
 
     Returns (spec, nfixed). nfixed is how many log slopes had to be projected to
     satisfy unimodality; a large value means the estimate is too noisy to use
     as-is.
+
+    VARIABLE REFLECTION. The estimator works in the innovation y - H(x); the
+    C++ evaluates the density at H(x) - y. The exported spec is therefore the
+    reflection: mode negated, interval negated and swapped, slopes reversed
+    and negated, tails swapped with slopes negated and curvatures kept.
+    Symmetric densities are unchanged up to roundoff. Pinned empirically by
+    the l95 runs: a density at mode +0.3 in the code's variable matches a
+    Gaussian control with obs bias -0.3 and differs from +0.3. reflect=False
+    exports the innovation-space density as-is.
 
     CONVENTION TRANSLATION. The C++ NonGaussianDensity treats stable min and
     stable max as bin EDGES and requires exactly (max-min)/dx log slopes. The
@@ -201,16 +211,25 @@ def to_spec(cache, *, mode=None, enforce="monotone", sigma_floor=1.0e-3,
     sig = sigma_at_mode({**cache, "slopes_log": slopes}, m)
     win = mode_window if mode_window is not None else cache["dx"]
 
+    lS, lDD = cache["left_log_slope"], cache["left_dd"]
+    rS, rDD = cache["right_log_slope"], cache["right_dd"]
+    lo_out, hi_out = cache["stable_min"], cache["stable_max"]
+    if reflect:
+        m = -m
+        lo_out, hi_out = -cache["stable_max"], -cache["stable_min"]
+        slopes = -np.asarray(slopes)[::-1]
+        lS, lDD, rS, rDD = -rS, rDD, -lS, lDD
+
     spec = {
         "mode": m,
         "grid spacing": float(cache["dx"]),
-        "stable min": float(cache["stable_min"]),
-        "stable max": float(cache["stable_max"]),
+        "stable min": float(lo_out),
+        "stable max": float(hi_out),
         "log slopes": [float(x) for x in slopes],
-        "left log slope": float(cache["left_log_slope"]),
-        "left curvature": float(cache["left_dd"]),
-        "right log slope": float(cache["right_log_slope"]),
-        "right curvature": float(cache["right_dd"]),
+        "left log slope": float(lS),
+        "left curvature": float(lDD),
+        "right log slope": float(rS),
+        "right curvature": float(rDD),
         "sigma at mode": sig,
         "mode window": float(win),
         "sigma floor": float(sigma_floor),
