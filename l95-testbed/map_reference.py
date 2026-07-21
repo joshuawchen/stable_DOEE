@@ -245,20 +245,29 @@ def spec_nll(fmt_spec, half_width):
 # the MAP solve: curvature-clipped Newton with Armijo backtracking
 # ---------------------------------------------------------------------------
 
-def solve_map(Cinv, H, xb, y, nll, dnll, x0, tol=1e-9, maxit=200):
+def solve_map(Cinv, H, xb, y, nll, dnll, x0, tol=1e-7, maxit=300, h=1e-5):
+    """h is the finite-difference step for the per-ob curvature; Format A
+    densities have a piecewise-constant score, so pass h about half their
+    grid spacing so the curvature is a bin average rather than an edge
+    spike. Their MAP also generically sits where the summed score JUMPS
+    through zero rather than where it equals zero, so convergence is
+    declared when the step collapses, not only when the gradient
+    vanishes."""
     x = x0.copy()
     n = x.size
-    h = 1e-5
 
     def J(xv):
         e = y - H @ xv
         r = xv - xb
         return 0.5 * r @ Cinv @ r + float(np.sum(nll(e)))
 
+    def grad(xv):
+        return Cinv @ (xv - xb) - H.T @ dnll(y - H @ xv)
+
+    stalled = False
     for _ in range(maxit):
         e = y - H @ x
-        r = x - xb
-        g = Cinv @ r - H.T @ dnll(e)
+        g = grad(x)
         if np.max(np.abs(g)) < tol:
             return x, J(x), True
         # per-ob curvature of nll by central difference, clipped to >= 0
@@ -280,17 +289,20 @@ def solve_map(Cinv, H, xb, y, nll, dnll, x0, tol=1e-9, maxit=200):
                 break
             step *= 0.5
         else:
-            return x, j0, False
+            stalled = True        # descent direction, no acceptable step:
+            break                 # pinned at a nonsmooth minimum
         x = xn
-    return x, J(x), np.max(np.abs(Cinv @ (x - xb)
-                                  - H.T @ dnll(y - H @ x))) < 100 * tol
+        if np.max(np.abs(step * p)) < 1e-10:
+            stalled = True
+            break
+    return x, J(x), stalled or bool(np.max(np.abs(grad(x))) < 10 * tol)
 
 
-def multistart_map(Cinv, H, xb, y, nll, dnll, starts):
+def multistart_map(Cinv, H, xb, y, nll, dnll, starts, h=1e-5):
     best, sols = None, []
     ok_any = False
     for x0 in starts:
-        x, j, ok = solve_map(Cinv, H, xb, y, nll, dnll, x0)
+        x, j, ok = solve_map(Cinv, H, xb, y, nll, dnll, x0, h=h)
         ok_any = ok_any or ok
         sols.append((j, x))
         if best is None or j < best[0]:
@@ -351,9 +363,9 @@ def replicate(a, seed, quiet):
 
     # arms ------------------------------------------------------------------
     arms = {}
-    arms["gaussian"] = analytic_nll({"kind": "gaussian",
-                                     "sigma": a.assumed_error})
-    arms["true"] = analytic_nll(spec_inj)
+    arms["gaussian"] = (*analytic_nll({"kind": "gaussian",
+                                       "sigma": a.assumed_error}), 1e-5)
+    arms["true"] = (*analytic_nll(spec_inj), 1e-5)
 
     gaussian_tails(cache, xg, pi, sd, Quiet(not quiet),
                    junction_frac=a.junction_frac)
@@ -361,12 +373,22 @@ def replicate(a, seed, quiet):
     est_bad = DY.check(est_spec)
     half = 12.0 * max(sd, spec_inj["sample_sigma"], a.assumed_error)
     if not est_bad:
-        arms["estimated"] = spec_nll(est_spec, half)
+        arms["estimated"] = (*spec_nll(est_spec, half),
+                             0.5 * est_spec["grid spacing"])
 
     tf_spec, _ = DY.to_spec(oracle_cache(spec_inj))
     tf_bad = DY.check(tf_spec)
     if not tf_bad and not a.no_true_fmt:
-        arms["true-fmt"] = spec_nll(tf_spec, half)
+        arms["true-fmt"] = (*spec_nll(tf_spec, half),
+                            0.5 * tf_spec["grid spacing"])
+
+    # sigma at the mode: the exported value against the true density's
+    # (analytic curvature at zero; for laplace the cusp makes this the
+    # smoothing scale, so read it only for smooth kinds)
+    _, dtru = analytic_nll(spec_inj)
+    dh = 1e-4
+    c0 = float((dtru(np.array([dh])) - dtru(np.array([-dh])))[0] / (2 * dh))
+    sig_true = float(1.0 / np.sqrt(c0)) if c0 > 0 else float("nan")
 
     # multistart solves -----------------------------------------------------
     starts = [xb, truth]
@@ -374,17 +396,21 @@ def replicate(a, seed, quiet):
         starts.append(xb + Cs @ rng.standard_normal(NGRID))
     out = {"sd": sd, "ku": ku, "l1": l1, "nfixed": nfixed,
            "est_export_ok": not est_bad, "resolvability":
-           float(cache.get("resolvability", np.nan))}
+           float(cache.get("resolvability", np.nan)),
+           "sig_mode_true": sig_true,
+           "sig_mode_est": (float(est_spec["sigma at mode"])
+                            if not est_bad else float("nan"))}
     sols = {}
-    for name, (nll, dnll) in arms.items():
-        x, j, nb, ok = multistart_map(Cinv, H, xb, y, nll, dnll, starts)
+    for name, (nll, dnll, hh) in arms.items():
+        x, j, nb, ok = multistart_map(Cinv, H, xb, y, nll, dnll, starts,
+                                      h=hh)
         sols[name] = x
         out[f"basins_{name}"] = nb
         out[f"converged_{name}"] = ok
     if "estimated" not in sols:
         return out, est_bad
 
-    nll_t, _ = arms["true"]
+    nll_t = arms["true"][0]
 
     def j_true(x):
         r = x - xb
@@ -501,7 +527,8 @@ def main():
         basins = "/".join(str(out.get(f"basins_{n}", "-"))
                           for n in ("gaussian", "estimated", "true",
                                     "true-fmt"))
-        print(f"  rep {r}: doee sd {out['sd']:.3f} L1 {out['l1']:.3f}  "
+        print(f"  rep {r}: doee sd {out['sd']:.3f} L1 {out['l1']:.3f} "
+              f"sig@m {out['sig_mode_est']:.2f}/{out['sig_mode_true']:.2f}  "
               f"rmse bg {out['rmse_bg']:.4f}  "
               f"gauss {out['rmse_gaussian']:.4f}  "
               f"est {out['rmse_estimated']:.4f}  "
@@ -553,6 +580,18 @@ def main():
         print(f"  Format A representation bound: true-fmt sits "
               f"{np.mean(v):.4f} rmse from the analytic true MAP; "
               "estimation error below this is invisible to the export")
+    if len(rows) >= 3:
+        re_ = np.array([o["regret_estimated"] for o in rows])
+        l1_ = np.array([o["l1"] for o in rows])
+        sm_ = np.array([abs(np.log(o["sig_mode_est"]
+                                   / o["sig_mode_true"])) for o in rows])
+        if np.all(np.isfinite(sm_)) and re_.std() > 0 and l1_.std() > 0 \
+                and sm_.std() > 0:
+            c_l1 = float(np.corrcoef(re_, l1_)[0, 1])
+            c_sm = float(np.corrcoef(re_, sm_)[0, 1])
+            print(f"  what predicts the estimated arm's regret: corr with "
+                  f"density L1 {c_l1:+.2f}, with |log sigma-at-mode "
+                  f"error| {c_sm:+.2f}")
     return 0
 
 
