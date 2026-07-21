@@ -265,18 +265,53 @@ def to_yaml(spec, indent=8, per_line=6):
     return "\n".join(out)
 
 
+def validate_spec(spec):
+    """Mirror of the C++ NonGaussianDensity::validate(). Returns a list of
+    problems, empty if the C++ will accept the spec. Kept in lockstep with
+    the C++ via jedi_export/fixtures.json, which both sides consume."""
+    out = []
+    dx = spec["grid spacing"]
+    lo, hi = spec["stable min"], spec["stable max"]
+    sl = spec["log slopes"]
+    if not dx > 0:
+        out.append("grid spacing must be > 0")
+    if not hi > lo:
+        out.append("stable max must exceed stable min")
+    if not spec["sigma at mode"] > 0:
+        out.append("sigma at mode must be > 0")
+    if spec.get("sigma floor", 0.0) < 0:
+        out.append("sigma floor must be >= 0")
+    if len(sl) == 0:
+        out.append("log slopes must not be empty")
+        return out
+    nb = (hi - lo) / dx
+    if abs(nb - len(sl)) > 1e-6:
+        out.append(f"log slopes has {len(sl)} entries but the grid implies "
+                   f"{nb:.6f} bins")
+    m = spec["mode"]
+    if m < lo or m > hi:
+        out.append("mode lies outside [stable min, stable max]")
+    if spec["left curvature"] > 0 or spec["right curvature"] > 0:
+        out.append("tail curvatures must be <= 0")
+    for j, s in enumerate(sl):
+        c = lo + (j + 0.5) * dx
+        if c < m and s < 0:
+            out.append(f"log slope {j} is negative below the mode")
+            break
+        if c > m and s > 0:
+            out.append(f"log slope {j} is positive above the mode")
+            break
+    return out
+
+
 def check(spec, dmax=None, n=2001):
-    """Cross-check: the exported block must give a finite positive effective
-    variance everywhere, using the same logic as the C++ evaluator, and must
-    satisfy the count identity the C++ enforces on load,
-    len(log slopes) == (stable max - stable min)/grid spacing. Returns a list
-    of offending entries, empty if the density is usable."""
-    bad = []
-    nb = (spec["stable max"] - spec["stable min"]) / spec["grid spacing"]
-    nsl = len(spec["log slopes"])
-    if abs(nb - round(nb)) > 1e-6 or int(round(nb)) != nsl:
-        bad.append(("bin count", f"{nsl} log slopes but the grid implies "
-                                 f"{nb:.6f} bins; the C++ will reject this"))
+    """Cross-check: the exported block must pass the same validation the C++
+    applies on load (validate_spec) and must give a finite positive effective
+    variance everywhere, using the same logic as the C++ evaluator. Returns a
+    list of offending entries, empty if the density is usable."""
+    bad = [("validate", msg) for msg in validate_spec(spec)]
+    if bad:
+        return bad
     f = Density(spec)
     hi = dmax if dmax is not None else 3.0 * (spec["stable max"] - spec["mode"]) + 1.0
     lo = -3.0 * (spec["mode"] - spec["stable min"]) - 1.0
