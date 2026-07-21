@@ -344,7 +344,63 @@ def estimate_density(y, hofx_members, seed, lam, adaptive):
     return np.asarray(xg), np.asarray(pi), cache
 
 
-def replicate(a, seed, quiet):
+def save_map_plot(path, xg, pi, spec_inj, est_spec, dtru, sig_true, eps):
+    """Two things per replicate: the density (linear and log, with the
+    histogram of the actually drawn errors -- an OSSE, so they are known)
+    and the weight profile sigma_o(d), exported versus true, with the
+    departures underneath. The second panel is the one that predicts the
+    analysis."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return None
+    den = DY.Density(est_spec)
+    s = spec_inj["sample_sigma"]
+    fine = np.linspace(-6 * s, 6 * s, 1201)
+    dxf = fine[1] - fine[0]
+    tru = analytic_density(spec_inj, fine)
+    p = np.interp(fine, xg, pi, left=0.0, right=0.0)
+    tot = p.sum() * dxf
+    if tot > 0:
+        p = p / tot
+    fig, ax = plt.subplots(1, 3, figsize=(14.5, 4.2))
+    ax[0].hist(eps, bins=40, density=True, alpha=0.25, color="tab:gray",
+               label="drawn errors")
+    ax[0].plot(fine, tru, "k-", lw=1.8, label="injected truth")
+    ax[0].plot(fine, p, "-", color="tab:red", lw=1.4, label="DOEE estimate")
+    ax[0].set_title("noise density")
+    ax[0].set_xlabel("obs error")
+    ax[0].legend(frameon=False, fontsize=8)
+    ax[1].semilogy(fine, np.maximum(tru, 1e-7), "k-", lw=1.8)
+    ax[1].semilogy(fine, np.maximum(p, 1e-7), "-", color="tab:red", lw=1.4)
+    ax[1].set_ylim(1e-5, None)
+    ax[1].set_title("noise density, log scale (tails)")
+    ax[1].set_xlabel("obs error")
+    dgrid = np.linspace(-4 * s, 4 * s, 801)
+    se = np.array([np.sqrt(den.variance(float(d))) for d in dgrid])
+    gt = -dtru(-dgrid)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        vt = np.where(np.abs(dgrid) > 1e-3, dgrid / gt, sig_true ** 2)
+    vt = np.where((vt > 0) & np.isfinite(vt), vt, np.nan)
+    ax[2].plot(dgrid, np.sqrt(vt), "k-", lw=1.8, label="true sigma_o(d)")
+    ax[2].plot(dgrid, se, "-", color="tab:red", lw=1.4,
+               label="exported sigma_o(d)")
+    axb = ax[2].twinx()
+    axb.hist(-eps, bins=40, alpha=0.15, color="tab:blue")
+    axb.set_yticks([])
+    ax[2].set_ylim(0, None)
+    ax[2].set_title("the weight profile the DA consumes")
+    ax[2].set_xlabel("departure d = H(x) - y")
+    ax[2].legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+    return path
+
+
+def replicate(a, seed, quiet, plot_path=None):
     rng = np.random.default_rng(seed)
     C = prior_cov(a.sigma_b, a.length_scale)
     Cs = np.linalg.cholesky(C)
@@ -419,6 +475,9 @@ def replicate(a, seed, quiet):
         lr = 0.5 * np.log(v_e / v_t)
         wpe, wbias = float(np.sqrt(np.mean(lr ** 2))), float(np.mean(lr))
         wstd = float(np.std(lr))
+        if plot_path is not None:
+            save_map_plot(plot_path, xg, pi, spec_inj, est_spec, dtru,
+                          sig_true, eps)
     else:
         wpe = wbias = wstd = float("nan")
 
@@ -556,9 +615,17 @@ def run_batch(a, lam, verbose=True):
     only on the seeds, so batches at different lam are exactly paired."""
     b = copy.copy(a)
     b.lam = lam
+    pdir = None
+    if getattr(b, "plots", None):
+        pdir = Path(b.plots)
+        pdir.mkdir(parents=True, exist_ok=True)
     rows, skipped = [], 0
     for r in range(b.replicates):
-        out, bad = replicate(b, b.seed + 100 * r, quiet=True)
+        pp = None
+        if pdir is not None:
+            lam_tag = "adaptive" if b.lam is None else f"lam{b.lam:g}"
+            pp = pdir / f"{b.density}_{lam_tag}_rep{r}.png"
+        out, bad = replicate(b, b.seed + 100 * r, quiet=True, plot_path=pp)
         if bad:
             skipped += 1
             print(f"  rep {r}: DOEE export rejected "
@@ -613,6 +680,12 @@ def main():
     ap.add_argument("--extra-starts", type=int, default=3)
     ap.add_argument("--no-true-fmt", action="store_true",
                     help="skip the true-through-Format-A arm")
+    ap.add_argument("--plots", default=None,
+                    help="directory for per-replicate PNGs: the recovered "
+                         "density against the injected truth (linear and "
+                         "log) and the exported weight profile sigma_o(d) "
+                         "against the true one, with the departures "
+                         "underneath")
     ap.add_argument("--jedi-semantics", action="store_true",
                     help="evaluate the Format A arms with the evolving-"
                          "Gaussian effective gradient (d-m)/sigma_o^2(d) "
