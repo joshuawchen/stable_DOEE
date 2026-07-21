@@ -121,13 +121,14 @@ def analyze_exact(Xf, y, H, C, nll, dnll, hh, K, rng, burn=150,
     c = np.clip((dnll(e + hh) - dnll(e - hh)) / (2 * hh), 0.0, None)
     A = Pinv + (H.T * c) @ H + 1e-10 * np.eye(Xf.shape[0])
     L = np.linalg.cholesky(A)
-    tau, acc_tot, n_tot = 0.55, 0, 0
+    tau, acc_tot, n_tot = 0.4, 0, 0
     Xa = np.empty((Xf.shape[0], K))
     for k in range(K):
         x = Xf[:, k].copy()
         lp, g = logp(x), grad(x)
-        acc_c = 0
-        for it in range(burn):
+        acc_c, acc_win = 0, 0
+        nb = 2 * burn if k == 0 else burn
+        for it in range(nb):
             m_x = x + 0.5 * tau * tau * np.linalg.solve(A, g)
             xp = m_x + tau * np.linalg.solve(
                 L.T, rng.standard_normal(x.size))
@@ -141,49 +142,65 @@ def analyze_exact(Xf, y, H, C, nll, dnll, hh, K, rng, burn=150,
             if np.log(rng.random()) < a_log:
                 x, lp, g = xp, lpp, gp
                 acc_c += 1
+                acc_win += 1
             if k == 0 and it % 25 == 24:
-                r_ = acc_c / (it + 1)
+                r_ = acc_win / 25.0
+                acc_win = 0
                 if r_ > 0.65:
-                    tau *= 1.15
+                    tau *= 1.2
                 elif r_ < 0.45:
-                    tau /= 1.15
+                    tau /= 1.3
         acc_tot += acc_c
-        n_tot += burn
+        n_tot += nb
         Xa[:, k] = x
     return Xa, {"acc_rate": acc_tot / max(n_tot, 1), "tau": tau}
 
 
-def analyze_pff(Xf, y, H, C, nll, dnll, hh, K, rng, iters=250, step0=0.1,
-                prior=None):
-    """The interacting particle flow, SVGD form: particles move along the
-    kernel-averaged posterior score plus the repulsion term, positions
-    updating INSIDE the kernel (unlike the current oops PFF.h, which pins
-    kernel positions at the background). Bandwidth by the median
-    heuristic; step size backed off when the mean update norm grows."""
+def analyze_pff(Xf, y, H, C, nll, dnll, hh, K, rng, iters=300, step0=0.3,
+                prior=None, kernel="component"):
+    """The interacting particle flow, SVGD form, particle positions live
+    in the kernel. kernel="component" is the dimension-wise kernel of Hu
+    & van Leeuwen (2021) and of oops PFF.h (Schur products): each state
+    component gets its own bandwidth, the paper's remedy for the variance
+    collapse a scalar RBF kernel suffers when K is comparable to the
+    dimension. kernel="scalar" keeps vanilla SVGD for comparison.
+    AdaGrad stepping (the SVGD default), stable as the bandwidth shrinks
+    with K; a fixed step is not."""
     mu, P = prior if prior is not None else fit_prior(Xf, C)
     Pinv = np.linalg.inv(P)
     _, grad = posterior_pieces(Pinv, mu, H, y, nll, dnll)
     X = Xf[:, :K].copy()
-    N = X.shape[1]
-    step, prev = step0, np.inf
+    d, N = X.shape
+    G = np.zeros_like(X)
+    logN = np.log(N + 1.0)
+    iu = np.triu_indices(N, 1)
+    last = np.inf
     for _ in range(iters):
-        S = np.stack([grad(X[:, j]) for j in range(N)], axis=1)  # n x N
-        n2 = np.sum(X * X, axis=0)
-        D2 = np.maximum(n2[:, None] + n2[None, :] - 2.0 * (X.T @ X), 0.0)
-        med = np.median(D2[np.triu_indices(N, 1)])
-        h2 = max(med / (2.0 * np.log(N + 1.0)), 1e-8)
-        Kn = np.exp(-D2 / (2.0 * h2))
-        drift = (S @ Kn) / N                                   # n x N
-        rep = (X * Kn.sum(axis=0) - X @ Kn) / (h2 * N)         # n x N
-        phi = drift + rep
-        nrm = float(np.sqrt(np.mean(phi ** 2)))
-        if nrm > 1.02 * prev:
-            step /= 1.5
-        prev = nrm
-        X = X + step * phi
-        if step < 1e-6:
+        S = np.stack([grad(X[:, j]) for j in range(N)], axis=1)  # d x N
+        if kernel == "scalar":
+            n2 = np.sum(X * X, axis=0)
+            D2 = np.maximum(n2[:, None] + n2[None, :]
+                            - 2.0 * (X.T @ X), 0.0)
+            h2 = max(np.median(D2[iu]) / (2.0 * logN), 1e-8)
+            Kn = np.exp(-D2 / (2.0 * h2))
+            phi = (S @ Kn) / N \
+                + (X * Kn.sum(axis=0) - X @ Kn) / (h2 * N)
+        else:
+            phi = np.empty_like(X)
+            for c in range(d):
+                dc = X[c][:, None] - X[c][None, :]
+                d2 = dc * dc
+                h2 = max(np.median(d2[iu]) / (2.0 * logN), 1e-10)
+                Kc = np.exp(-d2 / (2.0 * h2))
+                phi[c] = (S[c] @ Kc) / N \
+                    + (X[c] * Kc.sum(axis=0) - X[c] @ Kc) / (h2 * N)
+        G += phi * phi
+        upd = step0 * phi / (np.sqrt(G) + 1e-8)
+        X = X + upd
+        last = float(np.sqrt(np.mean(upd ** 2)))
+        if last < 1e-6:
             break
-    return X, {"final_update": prev, "step": step}
+    return X, {"final_update": last}
 
 
 def analyze_eda(Xf, y, H, C, sig_assumed, rng):
@@ -470,20 +487,23 @@ def pff_k_sweep(a):
             ref_mean = Xr.mean(axis=1)
             ref_sd = np.std(Xr, axis=1, ddof=1)
             ref_note = f"MALA, {Kref} independent chains"
-        print(f"\npff K sweep, {case} likelihood (reference: {ref_note})")
+        print(f"\npff K sweep, {case} likelihood (reference: {ref_note}), "
+              f"kernel {a.pff_kernel}")
         print("      K    rmse(mean)   sd ratio   implied inflation   "
-              "seconds")
+              "final upd   seconds")
         for K in Ks:
             Xf = base[:, None] + Cs @ rng.standard_normal((NGRID, K))
             t0 = time.time()
-            Xp, _ = analyze_pff(Xf, y, H, C, nll, dnll, 1e-5, K,
-                                np.random.default_rng(a.seed + 97 + K),
-                                iters=a.pff_iters, prior=(base, C))
+            Xp, inf_ = analyze_pff(Xf, y, H, C, nll, dnll, 1e-5, K,
+                                   np.random.default_rng(a.seed + 97 + K),
+                                   iters=a.pff_iters, prior=(base, C),
+                                   kernel=a.pff_kernel)
             dt = time.time() - t0
             rmse = float(np.sqrt(np.mean((Xp.mean(axis=1) - ref_mean) ** 2)))
             sdr = float(np.mean(np.std(Xp, axis=1, ddof=1) / ref_sd))
             print(f"  {K:5d}    {rmse:.4f}       {sdr:.3f}      "
-                  f"{1.0 / max(sdr, 1e-6):.2f}                {dt:5.1f}")
+                  f"{1.0 / max(sdr, 1e-6):.2f}                "
+                  f"{inf_['final_update']:.1e}     {dt:5.1f}")
     print("\nreading: sd ratio -> 1 with K is the finite-particle "
           "under-dispersion closing; the implied inflation column is "
           "what PFF.h's `inflation factor` would need at that K")
@@ -521,7 +541,12 @@ def main():
                     help="comma-separated particle counts; single-window "
                          "calibration study of the flow against analytic "
                          "and MALA references (no cycling)")
-    ap.add_argument("--pff-iters", type=int, default=250)
+    ap.add_argument("--pff-iters", type=int, default=300)
+    ap.add_argument("--pff-kernel", default="component",
+                    choices=["component", "scalar"],
+                    help="component = the dimension-wise kernel of Hu & "
+                         "van Leeuwen (2021) and oops PFF.h; scalar = "
+                         "vanilla SVGD, kept for comparison")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:

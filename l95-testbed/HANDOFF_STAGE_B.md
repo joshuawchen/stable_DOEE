@@ -41,6 +41,21 @@ the exact guarantee in the idealized limit and finite-K approximations
 otherwise. The exchangeability ratio ER = var(H truth - H members) /
 (2 mean member variance) tests the premise directly (1 iff calibrated).
 
+## CORRECTION (post K-sweep)
+
+Every PFF number above and below was measured on a SCALAR-RBF-kernel
+SVGD -- my sandbox implementation choice, not the method. PFF.h and Hu &
+van Leeuwen (2021) use a DIMENSION-WISE kernel (the CtrlInc_-valued
+kernel applied by schur_product_with), which is the paper's remedy for
+exactly the variance collapse measured here (sd ratio ~0.3 at K <= 100
+in d = 40 is the known scalar-kernel regime K comparable to dimension).
+The sandbox pff now defaults to the componentwise kernel
+(--pff-kernel component) with AdaGrad stepping; the K sweep and the
+cycling comparisons must be re-measured under it before any claim about
+the operational PFF's calibration is made. The first sweep's large-K
+rows (sd overshooting 1, mean degrading with K) were fixed-step solver
+divergence, not method behavior, and are void.
+
 ## Measured results (heavy density throughout)
 
 Benign configuration (assumed 0.4 ~ true sd 0.45, persistence 0.8,
