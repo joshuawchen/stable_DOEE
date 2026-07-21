@@ -41,20 +41,36 @@ the exact guarantee in the idealized limit and finite-K approximations
 otherwise. The exchangeability ratio ER = var(H truth - H members) /
 (2 mean member variance) tests the premise directly (1 iff calibrated).
 
-## CORRECTION (post K-sweep)
+## CORRECTION (post K-sweep) -- RESOLVED
 
-Every PFF number above and below was measured on a SCALAR-RBF-kernel
-SVGD -- my sandbox implementation choice, not the method. PFF.h and Hu &
-van Leeuwen (2021) use a DIMENSION-WISE kernel (the CtrlInc_-valued
-kernel applied by schur_product_with), which is the paper's remedy for
-exactly the variance collapse measured here (sd ratio ~0.3 at K <= 100
-in d = 40 is the known scalar-kernel regime K comparable to dimension).
-The sandbox pff now defaults to the componentwise kernel
-(--pff-kernel component) with AdaGrad stepping; the K sweep and the
-cycling comparisons must be re-measured under it before any claim about
-the operational PFF's calibration is made. The first sweep's large-K
-rows (sd overshooting 1, mean degrading with K) were fixed-step solver
-divergence, not method behavior, and are void.
+Every PFF number in the cycling results below was measured on a
+SCALAR-RBF-kernel SVGD -- my sandbox implementation choice, not the
+method. PFF.h and Hu & van Leeuwen (2021) use a DIMENSION-WISE kernel
+(the CtrlInc_-valued kernel applied by schur_product_with), the paper's
+remedy for exactly the variance collapse measured. The K sweep settled
+it head to head (single window, known prior N(base, C), true likelihood,
+AdaGrad, convergence verified by the final-update column; heavy case
+scored against a 400-independent-chain MALA reference):
+
+    kernel component: sd ratio 0.95-0.98 at EVERY K from 25 to 400,
+        both gaussian and heavy; implied inflation 1.02-1.05; mean at
+        reference accuracy. Calibration holds at K=25 in d=40 -- BELOW
+        the dimension.
+    kernel scalar: sd ratio 0.27-0.42 over the same range, climbing too
+        slowly for any affordable K. The collapse is the kernel's, and
+        no ensemble size fixes it.
+
+Consequences: the Hu & van Leeuwen dimension-wise construction does what
+the paper claims, measured against an exact-posterior yardstick; the
+oops `inflation factor` for a componentwise flow is ~1.05, not a
+compensation for a 3x deficiency; K = 30-80 is sufficient. The
+scalar-kernel PFF rows in the cycling tables below are SUPERSEDED and
+kept only as the record of the wrong-kernel behavior; the cycling
+comparison is to be re-measured with --pff-kernel component (now the
+default). Remaining sandbox-vs-PFF.h differences: the sandbox bandwidth
+is a per-component median heuristic where PFF.h uses the fixed alpha*B
+scalar from YAML, and the two code caveats (kernel positions pinned at
+the background, possible double-counted prior) stand.
 
 ## Measured results (heavy density throughout)
 
