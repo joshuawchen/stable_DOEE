@@ -430,7 +430,12 @@ def main():
     ap.add_argument("--sigma-b", type=float, default=0.5,
                     help="synthetic mode only")
     ap.add_argument("--floor-trials", type=int, default=6)
-    ap.add_argument("--max-nfixed", type=int, default=5)
+    ap.add_argument("--max-nfixed", type=int, default=5,
+                    help="export gate, in PERCENT of probability mass the "
+                         "unimodality projection may touch (the raw bin "
+                         "count is reported but does not gate: at large "
+                         "sample sizes many near-empty tail bins get "
+                         "cosmetic sign repairs)")
     ap.add_argument("--reuse-ensemble", action="store_true",
                     help="real mode: skip genenspert and the member runs if "
                          "their outputs already exist")
@@ -578,6 +583,26 @@ def main():
                 "0.7 for the density shape to be usable (below that, "
                 "variance only)")
 
+    # Save the recovered density itself, so a surprising export can be
+    # inspected rather than inferred from three summary numbers, and report
+    # its local maxima with the mass they carry: a genuine density has one
+    # dominant maximum near zero, and anything else names the problem.
+    np.savez(data / "testbed_recovered.npz", xg=xg, pi=pi,
+             slopes_log=np.asarray(cache["slopes_log"]),
+             dx=cache["dx"], stable_min=cache["stable_min"],
+             stable_max=cache["stable_max"], lam=cache["lambda"],
+             resolvability=cache["resolvability"])
+    dxg = xg[1] - xg[0]
+    tot_pi = max(float(pi.sum() * dxg), 1e-300)
+    interior = (pi[1:-1] >= pi[:-2]) & (pi[1:-1] >= pi[2:])
+    peaks = np.where(interior)[0] + 1
+    peaks = peaks[np.argsort(pi[peaks])[::-1][:5]]
+    for p in peaks:
+        lo_i, hi_i = max(0, p - 5), min(len(xg), p + 6)
+        mass = float(pi[lo_i:hi_i].sum() * dxg) / tot_pi
+        rep.info(f"local max at {xg[p]:+.3f}  density {pi[p]:.4f}  "
+                 f"mass within 5 bins {100 * mass:.1f}%")
+
     # ---- 6. the null floor at this configuration ---------------------------
     rep.head(f"null floor at the measured configuration "
              f"({a.floor_trials} trials)")
@@ -618,11 +643,44 @@ def main():
     spec, nfixed = DY.to_spec(cache, save_sigma=True)
     rep.info(f"mode {spec['mode']:+.3f}  sigma at mode "
              f"{spec['sigma at mode']:.3f}  nfixed {nfixed}")
-    if nfixed > a.max_nfixed:
-        rep.fail(f"nfixed={nfixed} exceeds --max-nfixed={a.max_nfixed}: the "
-                 "estimate is too noisy to assimilate")
+    export_ok = True
+    # The gate on the unimodality projection weighs the probability MASS the
+    # projection touched, not the bin count: at large sample sizes the kept
+    # interior reaches far into the tails, where slope signs wiggle in bins
+    # carrying next to no mass, and repairing those is cosmetic. Measured on
+    # the synthetic testbed at n=1200, K=100: seventeen projected bins with
+    # an L1 of 0.175 against the truth -- an essentially perfect recovery
+    # that a raw count gate of five would refuse.
+    c_bins = np.asarray(cache["stable_min"]
+                        + (np.arange(len(cache["slopes_log"])) + 0.5)
+                        * cache["dx"])
+    s_raw = np.asarray(cache["slopes_log"], float)
+    bad_bins = ((c_bins < spec["mode"]) & (s_raw < 0)) \
+        | ((c_bins > spec["mode"]) & (s_raw > 0))
+    p_bins = np.interp(c_bins, xg, pi, left=0.0, right=0.0)
+    mass_fixed = float(p_bins[bad_bins].sum()
+                       / max(p_bins.sum(), 1e-300))
+    rep.info(f"probability mass in projected bins {100 * mass_fixed:.2f}%")
+    if mass_fixed > 0.01 * a.max_nfixed:
+        export_ok = False
+        rep.fail(f"the unimodality projection touched "
+                 f"{100 * mass_fixed:.2f}% of the probability mass "
+                 f"(gate {a.max_nfixed}%): the estimate is too noisy to "
+                 "assimilate")
+    # The mode must sit near zero for an observation-error density: the
+    # departures were not bias corrected toward anything else, and the Jo
+    # scalar the C++ reports is 0.5 <d, g(d)>, which equals the
+    # evolving-Gaussian value 0.5 <d - m, g(d)> only near m = 0 -- a far
+    # mode makes the reported JoJc negative and oops refuses to minimize.
+    if abs(spec["mode"]) > 0.5 * max(sd, 1e-12):
+        export_ok = False
+        rep.fail(f"exported mode {spec['mode']:+.3f} sits "
+                 f"{abs(spec['mode']) / max(sd, 1e-12):.1f} recovered sigmas "
+                 "from zero; an obs-error density should peak near zero and "
+                 "the C++ Jo scalar assumes it")
     bad = DY.check(spec)
     if bad:
+        export_ok = False
         rep.fail(f"check(spec) rejected {len(bad)} departure(s), first "
                  f"{bad[0]}")
     else:
@@ -647,6 +705,11 @@ def main():
 
     # ---- 9. run both -------------------------------------------------------
     rep.head("run the control and the treatment")
+    if not export_ok:
+        rep.info("skipped: the density failed the export gates above, so "
+                 "running it would only crash or mislead; fix the estimate "
+                 "first (Data/testbed_recovered.npz holds it)")
+        return rep.finish()
     okc = run_bin(rep, bindir, "l95_4dvar.x", "testinput/testbed_control.yaml",
                   testdir, logdir, "control")
     okt = run_bin(rep, bindir, "l95_4dvar.x",
