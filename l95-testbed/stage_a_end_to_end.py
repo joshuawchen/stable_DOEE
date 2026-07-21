@@ -351,6 +351,62 @@ def true_log_density(spec, x):
     return np.log(np.maximum(f, 1e-300))
 
 
+def save_density_plot(path, obs, hofx, xg, pi, inj, seed, adaptive):
+    """Three-panel picture of the run: the recovered density against the
+    injected truth (linear and log -- the log panel is where tail lobes
+    and satellite maxima are visible), and the innovation space showing
+    the raw histogram next to the fitted and true innovation densities.
+    Written on every run, including gate failures, which is when it is
+    most wanted. Returns the path, or None when matplotlib is absent."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return None
+    nb = None
+    if adaptive:
+        _, _, _, iv = R.histograms_from_ensemble(obs, hofx, seed=seed)
+        nb = R.adaptive_bin_count(iv)
+    grid, f_d, f_k, _ = R.histograms_from_ensemble(obs, hofx, seed=seed,
+                                                   n_bins=nb)
+    dx = grid[1] - grid[0]
+    p = np.interp(grid, xg, pi, left=0.0, right=0.0)
+    tot = p.sum() * dx
+    if tot > 0:
+        p = p / tot
+    tru = analytic_density(inj, grid)
+    Eta = R._conv_matrix(np.asarray(f_k, float), grid.size, dx, grid[0])
+    fit_in = dx * (Eta @ p)
+    tru_in = dx * (Eta @ tru)
+
+    fig, ax = plt.subplots(1, 3, figsize=(15, 4.2))
+    ax[0].plot(grid, tru, "k-", lw=1.8, label="injected truth")
+    ax[0].plot(grid, p, "-", color="tab:red", lw=1.4, label="estimate")
+    ax[0].set_title("noise density")
+    ax[0].set_xlabel("obs error")
+    ax[0].legend(frameon=False)
+    ax[1].semilogy(grid, np.maximum(tru, 1e-7), "k-", lw=1.8)
+    ax[1].semilogy(grid, np.maximum(p, 1e-7), "-", color="tab:red", lw=1.4)
+    ax[1].set_ylim(1e-6, None)
+    ax[1].set_title("noise density, log scale (tails and satellites)")
+    ax[1].set_xlabel("obs error")
+    ax[2].fill_between(grid, f_d, step="mid", alpha=0.35,
+                       color="tab:gray", label="innovation histogram")
+    ax[2].plot(grid, tru_in / dx, "k-", lw=1.8, label="truth * kernel")
+    ax[2].plot(grid, fit_in / dx, "-", color="tab:red", lw=1.4,
+               label="estimate * kernel (what the fit matched)")
+    ax[2].set_title("innovation space")
+    ax[2].set_xlabel("innovation  y - H(x)")
+    ax[2].legend(frameon=False, fontsize=8)
+    for a_ in ax:
+        a_.set_xlim(grid[0], grid[-1])
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+    return path
+
+
 def oracle_cache(spec_inj):
     """A stable_DOEE-style cache built from the injected density itself
     (grid-point convention: stable min/max are the first and last point).
@@ -667,6 +723,10 @@ def main():
              dx=cache["dx"], stable_min=cache["stable_min"],
              stable_max=cache["stable_max"], lam=cache["lambda"],
              resolvability=cache["resolvability"])
+    png = save_density_plot(data / "testbed_density.png", obs, hofx, xg, pi,
+                            inj, a.seed + 2, a.adaptive)
+    rep.info(f"density plot written to {png}" if png else
+             "no density plot: matplotlib is not installed in this python")
     dxg = xg[1] - xg[0]
     tot_pi = max(float(pi.sum() * dxg), 1e-300)
     interior = (pi[1:-1] >= pi[:-2]) & (pi[1:-1] >= pi[2:])
