@@ -351,6 +351,38 @@ def true_log_density(spec, x):
     return np.log(np.maximum(f, 1e-300))
 
 
+def oracle_cache(spec_inj):
+    """A stable_DOEE-style cache built from the injected density itself
+    (grid-point convention: stable min/max are the first and last point).
+    Regions where the density vanishes (mirrored_gamma support edge) are
+    trimmed to the contiguous run around the mode."""
+    s = spec_inj["sample_sigma"]
+    dx = s / 25.0
+    half = 6.0 * s
+    n = 2 * int(round(half / dx)) + 1
+    xg = (np.arange(n) - (n - 1) / 2) * dx
+    f = analytic_density(spec_inj, xg)
+    keep = f > 1e-12
+    padded = np.r_[0, keep.astype(int), 0]
+    d = np.diff(padded)
+    starts, ends = np.where(d == 1)[0], np.where(d == -1)[0]
+    k = int(np.argmax([f[s0:e0].sum() for s0, e0 in zip(starts, ends)]))
+    xg, f = xg[starts[k]:ends[k]], f[starts[k]:ends[k]]
+    logf = np.log(f)
+    slopes = np.empty_like(logf)
+    slopes[0] = (logf[1] - logf[0]) / dx
+    slopes[-1] = (logf[-1] - logf[-2]) / dx
+    slopes[1:-1] = (logf[2:] - logf[:-2]) / (2 * dx)
+    return {"dx": dx, "stable_min": float(xg[0]), "stable_max": float(xg[-1]),
+            "slopes_log": slopes,
+            "left_log_slope": float(slopes[0]),
+            "left_dd": float((slopes[1] - slopes[0]) / dx),
+            "right_log_slope": float(slopes[-1]),
+            "right_dd": float((slopes[-1] - slopes[-2]) / dx),
+            "lambda": float("nan"), "resolvability": float("inf"),
+            "kept_mass": 1.0}
+
+
 def read_columns(path, prefix=None):
     rec = CE.read_obt(str(path))
     if prefix is None:
@@ -439,6 +471,11 @@ def main():
     ap.add_argument("--reuse-ensemble", action="store_true",
                     help="real mode: skip genenspert and the member runs if "
                          "their outputs already exist")
+    ap.add_argument("--oracle-density", action="store_true",
+                    help="export the injected density instead of the "
+                         "estimate; separates estimation quality from the "
+                         "cost-function method (the estimate is still "
+                         "computed and reported)")
     ap.add_argument("--check-gaussian-diag", action="store_true",
                     help="real mode: also run the stock Gaussian-equivalence "
                          "configuration and assert EvolvingSigma == 0.4")
@@ -637,6 +674,17 @@ def main():
 
     # ---- 7. export ---------------------------------------------------------
     rep.head("export to the `non gaussian cost` block")
+    if a.oracle_density:
+        # Export the injected density itself. Everything downstream (mode
+        # fit, sigma fit, reflection, validation, gates, the treatment run)
+        # is identical, so the comparison isolates estimation quality from
+        # the cost-function method.
+        rep.info("ORACLE: exporting the injected density; the estimate "
+                 "above is reported but not assimilated")
+        cache = oracle_cache(spec_inj)
+        xg = cache["stable_min"] + np.arange(len(cache["slopes_log"])) \
+            * cache["dx"]
+        pi = analytic_density(spec_inj, xg)
     clamped = 0
     for side in ("left_dd", "right_dd"):
         if cache[side] > 0:
