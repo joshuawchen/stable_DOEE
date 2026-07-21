@@ -102,7 +102,8 @@ def posterior_pieces(Pinv, mu, H, y, nll, dnll):
 # providers
 # ---------------------------------------------------------------------------
 
-def analyze_exact(Xf, y, H, C, nll, dnll, hh, K, rng, burn=150):
+def analyze_exact(Xf, y, H, C, nll, dnll, hh, K, rng, burn=150,
+                  prior=None):
     """Preconditioned MALA targeting the exact posterior of the shared
     Gaussian prior and the current likelihood -- one independent chain per
     member, started at that member's prior position, keeping the last
@@ -112,7 +113,7 @@ def analyze_exact(Xf, y, H, C, nll, dnll, hh, K, rng, burn=150):
     kernel; per-member chains also cover separated modes the way a single
     chain cannot. Preconditioner = the MAP Hessian (clipped curvature),
     adapted step on the first chain, reused on the rest."""
-    mu, P = fit_prior(Xf, C)
+    mu, P = prior if prior is not None else fit_prior(Xf, C)
     Pinv = np.linalg.inv(P)
     xmap, _, _ = solve_map(Pinv, H, mu, y, nll, dnll, mu, h=hh)
     logp, grad = posterior_pieces(Pinv, mu, H, y, nll, dnll)
@@ -152,13 +153,14 @@ def analyze_exact(Xf, y, H, C, nll, dnll, hh, K, rng, burn=150):
     return Xa, {"acc_rate": acc_tot / max(n_tot, 1), "tau": tau}
 
 
-def analyze_pff(Xf, y, H, C, nll, dnll, hh, K, rng, iters=250, step0=0.1):
+def analyze_pff(Xf, y, H, C, nll, dnll, hh, K, rng, iters=250, step0=0.1,
+                prior=None):
     """The interacting particle flow, SVGD form: particles move along the
     kernel-averaged posterior score plus the repulsion term, positions
     updating INSIDE the kernel (unlike the current oops PFF.h, which pins
     kernel positions at the background). Bandwidth by the median
     heuristic; step size backed off when the mean update norm grows."""
-    mu, P = fit_prior(Xf, C)
+    mu, P = prior if prior is not None else fit_prior(Xf, C)
     Pinv = np.linalg.inv(P)
     _, grad = posterior_pieces(Pinv, mu, H, y, nll, dnll)
     X = Xf[:, :K].copy()
@@ -166,7 +168,8 @@ def analyze_pff(Xf, y, H, C, nll, dnll, hh, K, rng, iters=250, step0=0.1):
     step, prev = step0, np.inf
     for _ in range(iters):
         S = np.stack([grad(X[:, j]) for j in range(N)], axis=1)  # n x N
-        D2 = np.sum((X[:, :, None] - X[:, None, :]) ** 2, axis=0)  # N x N
+        n2 = np.sum(X * X, axis=0)
+        D2 = np.maximum(n2[:, None] + n2[None, :] - 2.0 * (X.T @ X), 0.0)
         med = np.median(D2[np.triu_indices(N, 1)])
         h2 = max(med / (2.0 * np.log(N + 1.0)), 1e-8)
         Kn = np.exp(-D2 / (2.0 * h2))
@@ -427,6 +430,66 @@ def selftest():
     return 0
 
 
+def pff_k_sweep(a):
+    """How fast does the flow's under-dispersion close with particle
+    count? Single window, the KNOWN prior N(base, C) shared exactly
+    across every K, the TRUE density in the likelihood -- nothing varies
+    but the flow. Gaussian case scored against the analytic Kalman
+    posterior; the non-Gaussian case against a 400-independent-chain MALA
+    reference. Reports the sd ratio (particle spread / reference spread)
+    and its reciprocal, the inflation factor the oops PFF would need."""
+    import time
+    rng = np.random.default_rng(a.seed)
+    C = prior_cov(a.sigma_b, a.length_scale)
+    Cs = np.linalg.cholesky(C)
+    Cinv = np.linalg.inv(C)
+    H = interp_operator(a.n_obs)
+    base = 4.0 * (np.sin(np.arange(NGRID) / 5.5)
+                  + 0.5 * np.cos(np.arange(NGRID) / 2.1))
+    xt = base + Cs @ rng.standard_normal(NGRID)
+    Ks = [int(s) for s in a.pff_k_sweep.split(",")]
+    cases = ["gaussian"] + ([a.density] if a.density != "gaussian" else [])
+    for case in cases:
+        eps, spec = draw_errors(case, rng, a.n_obs, a.scale)
+        spec["sample_sigma"] = sample_sigma_of(spec)
+        y = H @ xt + eps
+        nll, dnll = analytic_nll(spec)
+        if case == "gaussian":
+            s = spec["sigma"]
+            A = Cinv + H.T @ H / s ** 2
+            ref_mean = base + np.linalg.solve(
+                A, H.T @ (y - H @ base) / s ** 2)
+            ref_sd = np.sqrt(np.diag(np.linalg.inv(A)))
+            ref_note = "Kalman analytic"
+        else:
+            Kref = 400
+            Xf_ref = base[:, None] + Cs @ rng.standard_normal((NGRID, Kref))
+            Xr, _ = analyze_exact(Xf_ref, y, H, C, nll, dnll, 1e-5, Kref,
+                                  np.random.default_rng(a.seed + 31),
+                                  prior=(base, C))
+            ref_mean = Xr.mean(axis=1)
+            ref_sd = np.std(Xr, axis=1, ddof=1)
+            ref_note = f"MALA, {Kref} independent chains"
+        print(f"\npff K sweep, {case} likelihood (reference: {ref_note})")
+        print("      K    rmse(mean)   sd ratio   implied inflation   "
+              "seconds")
+        for K in Ks:
+            Xf = base[:, None] + Cs @ rng.standard_normal((NGRID, K))
+            t0 = time.time()
+            Xp, _ = analyze_pff(Xf, y, H, C, nll, dnll, 1e-5, K,
+                                np.random.default_rng(a.seed + 97 + K),
+                                iters=a.pff_iters, prior=(base, C))
+            dt = time.time() - t0
+            rmse = float(np.sqrt(np.mean((Xp.mean(axis=1) - ref_mean) ** 2)))
+            sdr = float(np.mean(np.std(Xp, axis=1, ddof=1) / ref_sd))
+            print(f"  {K:5d}    {rmse:.4f}       {sdr:.3f}      "
+                  f"{1.0 / max(sdr, 1e-6):.2f}                {dt:5.1f}")
+    print("\nreading: sd ratio -> 1 with K is the finite-particle "
+          "under-dispersion closing; the implied inflation column is "
+          "what PFF.h's `inflation factor` would need at that K")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -454,12 +517,19 @@ def main():
                          "analysis; estimation still runs on their "
                          "archives (separates provider bias from the "
                          "feedback loop)")
+    ap.add_argument("--pff-k-sweep", default=None,
+                    help="comma-separated particle counts; single-window "
+                         "calibration study of the flow against analytic "
+                         "and MALA references (no cycling)")
+    ap.add_argument("--pff-iters", type=int, default=250)
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
         return selftest()
     if a.adaptive:
         a.lam = None
+    if a.pff_k_sweep:
+        return pff_k_sweep(a)
     return run(a)
 
 
