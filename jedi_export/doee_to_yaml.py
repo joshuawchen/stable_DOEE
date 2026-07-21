@@ -129,7 +129,16 @@ def sigma_at_mode(cache, mode, window=None):
 
 def enforce_unimodal(slopes, centers, mode, how="monotone"):
     """The cost function requires slope > 0 below the mode and < 0 above it.
-    A noisy estimate can violate this where samples are few."""
+    A noisy estimate can violate this where samples are few.
+
+    Runs of wrong-sign slopes (a noise lobe in a tail) are projected by
+    LINEAR INTERPOLATION between the flanking valid slopes, not by copying
+    a neighbor: at a lobe boundary the neighbors are the small slopes, and
+    copying them leaves a near-zero-slope shelf on which the effective
+    variance (d - m)/g(d) explodes -- measured on the record ensemble,
+    two 1%-mass lobes at |d| ~ 2.5 produced EvolvingSigma up to 10.8
+    against a true ceiling of 2, and the treatment lost its edge exactly
+    on the moderate-tail observations the method exists for."""
     s = np.asarray(slopes, float).copy()
     bad = ((centers < mode) & (s < 0)) | ((centers > mode) & (s > 0))
     if not bad.any():
@@ -137,14 +146,26 @@ def enforce_unimodal(slopes, centers, mode, how="monotone"):
     if how == "strict":
         raise ValueError(f"{bad.sum()} log slopes violate unimodality about "
                          f"mode={mode:.4g}; pass enforce='monotone' to project them")
-    # project onto the nearest sign-correct value: clear the bad entries, then
-    # adopt the neighboring valid slope so the score does not vanish (which
-    # would make Eq. 9 undefined).
-    s[bad] = 0.0
+    good = np.where(~bad)[0]
     for i in np.where(bad)[0]:
-        nb = [s[k] for k in (i - 1, i + 1) if 0 <= k < s.size and not bad[k]]
-        if nb:
-            s[i] = min(nb, key=abs)
+        left = good[good < i]
+        right = good[good > i]
+        if left.size and right.size:
+            l, r = int(left[-1]), int(right[0])
+            t = (centers[i] - centers[l]) / (centers[r] - centers[l])
+            s[i] = (1 - t) * s[l] + t * s[r]
+        elif left.size:
+            s[i] = s[int(left[-1])]
+        elif right.size:
+            s[i] = s[int(right[0])]
+        else:
+            s[i] = 0.0
+        # interpolation between valid flanks can still cross zero right at
+        # the mode; clamp to the correct sign with a tiny magnitude
+        if centers[i] < mode and s[i] < 0:
+            s[i] = 1e-12
+        elif centers[i] > mode and s[i] > 0:
+            s[i] = -1e-12
     return s, int(bad.sum())
 
 
