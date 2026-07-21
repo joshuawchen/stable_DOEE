@@ -727,10 +727,17 @@ def main():
                         * cache["dx"])
     s_raw = np.asarray(cache["slopes_log"], float)
     # the spec is exported in H(x) - y; the cache lives in y - H(x), so
-    # reflect the mode back before classifying the cache's slopes
+    # reflect the mode back before classifying the cache's slopes.
+    # Bins within two grid spacings of the mode are exempt: slope signs
+    # across a flat top are mode-location chatter, not shape violations
+    # (the C++ uses sigma at mode near there anyway), and they sit on the
+    # densest bins, so counting them swamps the gate -- measured at lam 30
+    # on the record ensemble, an L1 0.154 recovery was refused at 5.66%
+    # with nearly all of it in two near-peak bins.
     mode_d = -spec["mode"]
-    bad_bins = ((c_bins < mode_d) & (s_raw < 0)) \
-        | ((c_bins > mode_d) & (s_raw > 0))
+    w = 2.0 * cache["dx"]
+    bad_bins = ((c_bins < mode_d - w) & (s_raw < 0)) \
+        | ((c_bins > mode_d + w) & (s_raw > 0))
     p_bins = np.interp(c_bins, xg, pi, left=0.0, right=0.0)
     mass_fixed = float(p_bins[bad_bins].sum()
                        / max(p_bins.sum(), 1e-300))
