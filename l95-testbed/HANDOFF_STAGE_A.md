@@ -5,10 +5,16 @@ realizable win. Everything below is tested and pushed; a fresh session can
 start from this file plus PROCESS_NONGAUSSIAN_JO.md (kept outside git at
 the rrfs-ufo-update root on the Mac).
 
+VERIFIED 2026-07-21 on the VM by a cold top-to-bottom pass: both tips,
+the full python battery, ctest 12/12, and the record reproduction hit
+every stated number exactly, including regret 0.0462 -- the determinism
+claim is itself tested.
+
 ## Where things run
 
 - Mac work root: `~/Downloads/scas-paper/rrfs-ufo-update/` with `stable_DOEE/`
-  (branch `jedi-density-export`, tip 34efa8d) and `oops-fork/`
+  (branch `jedi-density-export`; last code-bearing commit 34efa8d, this
+  handoff and later notes sit on top) and `oops-fork/`
   (branch `nongaussian-costjo`, tip 79388e44). Both pushed.
 - VM (OrbStack): source `~/jedi/src/oops` and `~/jedi/src/stable_DOEE`,
   build `~/jedi/src/build/oops`, venv `~/jedi/venv`.
