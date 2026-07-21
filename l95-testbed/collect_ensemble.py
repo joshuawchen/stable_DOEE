@@ -136,9 +136,18 @@ def reliability(pattern, truth_obs, departure="ombg"):
     K = hofx.shape[1]
     spread = np.sqrt(np.mean(np.var(hofx, axis=1, ddof=1)))
     err = np.sqrt(np.mean((hofx.mean(axis=1) - truth_obs) ** 2))
+    # The mean bias is reported separately because it is the deconvolution's
+    # blind direction: the member-difference kernel is symmetric about zero
+    # BY CONSTRUCTION (any ensemble-mean bias cancels in member_i - member_j),
+    # so a bias mu in the members shifts the recovered noise density by -mu
+    # and nothing on this data path can tell the two apart. The recovered
+    # density's location is therefore identified only up to this number, and
+    # |bias| <= rmse_of_mean bounds it even when the truth is not known.
+    bias = float(np.mean(hofx.mean(axis=1) - truth_obs))
     expected = spread * np.sqrt((K + 1.0) / K)
     ratio = expected / err if err > 0 else np.nan
     return {"spread": float(spread), "rmse_of_mean": float(err),
+            "bias_of_mean": bias,
             "expected_spread_for_reliability": float(expected),
             "ratio": float(ratio),
             "note": ("reliable" if 0.8 < ratio < 1.25 else

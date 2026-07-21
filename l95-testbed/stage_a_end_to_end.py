@@ -552,6 +552,10 @@ def main():
              f"mean background spread {meta['mean_background_spread']:.3f}")
     rel = CE.reliability(pattern, truth_obs)
     rep.info(f"reliability ratio {rel['ratio']:.2f}  ({rel['note']})")
+    rep.info(f"ensemble-mean bias {rel['bias_of_mean']:+.3f}: the "
+             "member-difference kernel cancels any mean bias, so the "
+             "recovered density's location is identified only up to this "
+             "number and its mode should be read net of it")
 
     # ---- 5. estimate the density -------------------------------------------
     rep.head("DOEE, third-difference regularized, lambda by cross-validation")
