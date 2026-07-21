@@ -17,10 +17,11 @@ Covers:
 
 import sys
 import warnings
+from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, "..")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import stable_doee_reg as R  # noqa: E402
 
 warnings.filterwarnings("ignore")
