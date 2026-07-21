@@ -390,6 +390,26 @@ def replicate(a, seed, quiet):
     c0 = float((dtru(np.array([dh])) - dtru(np.array([-dh])))[0] / (2 * dh))
     sig_true = float(1.0 / np.sqrt(c0)) if c0 > 0 else float("nan")
 
+    # weight-profile error: the DA consumes sigma_o(d), not the density.
+    # Compare the export's effective sigma with the true (d - m)/g_true(d)
+    # at this window's own departures, so the comparison is weighted the
+    # way the analysis weights it. rms of the log sigma ratio is the
+    # profile error; its mean is signed (positive = underweighting, the
+    # cheap side if the loss is asymmetric).
+    if not est_bad:
+        den_est = DY.Density(est_spec)
+        d_pts = -eps
+        g_t = -dtru(-d_pts)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            v_t = np.where(np.abs(d_pts) > 1e-3, d_pts / g_t,
+                           sig_true ** 2)
+        v_t = np.where((v_t > 0) & np.isfinite(v_t), v_t, sig_true ** 2)
+        v_e = np.array([den_est.variance(float(d)) for d in d_pts])
+        lr = 0.5 * np.log(v_e / v_t)
+        wpe, wbias = float(np.sqrt(np.mean(lr ** 2))), float(np.mean(lr))
+    else:
+        wpe = wbias = float("nan")
+
     # multistart solves -----------------------------------------------------
     starts = [xb, truth]
     for _ in range(a.extra_starts):
@@ -397,7 +417,7 @@ def replicate(a, seed, quiet):
     out = {"sd": sd, "ku": ku, "l1": l1, "nfixed": nfixed,
            "est_export_ok": not est_bad, "resolvability":
            float(cache.get("resolvability", np.nan)),
-           "sig_mode_true": sig_true,
+           "sig_mode_true": sig_true, "wpe": wpe, "wbias": wbias,
            "sig_mode_est": (float(est_spec["sigma at mode"])
                             if not est_bad else float("nan"))}
     sols = {}
@@ -528,7 +548,8 @@ def main():
                           for n in ("gaussian", "estimated", "true",
                                     "true-fmt"))
         print(f"  rep {r}: doee sd {out['sd']:.3f} L1 {out['l1']:.3f} "
-              f"sig@m {out['sig_mode_est']:.2f}/{out['sig_mode_true']:.2f}  "
+              f"sig@m {out['sig_mode_est']:.2f}/{out['sig_mode_true']:.2f} "
+              f"wpe {out['wpe']:.2f}/{out['wbias']:+.2f}  "
               f"rmse bg {out['rmse_bg']:.4f}  "
               f"gauss {out['rmse_gaussian']:.4f}  "
               f"est {out['rmse_estimated']:.4f}  "
@@ -585,13 +606,19 @@ def main():
         l1_ = np.array([o["l1"] for o in rows])
         sm_ = np.array([abs(np.log(o["sig_mode_est"]
                                    / o["sig_mode_true"])) for o in rows])
+        wp_ = np.array([o["wpe"] for o in rows])
+        wb_ = np.array([o["wbias"] for o in rows])
         if np.all(np.isfinite(sm_)) and re_.std() > 0 and l1_.std() > 0 \
-                and sm_.std() > 0:
+                and sm_.std() > 0 and wp_.std() > 0:
             c_l1 = float(np.corrcoef(re_, l1_)[0, 1])
             c_sm = float(np.corrcoef(re_, sm_)[0, 1])
+            c_wp = float(np.corrcoef(re_, wp_)[0, 1])
+            c_wb = float(np.corrcoef(re_, wb_)[0, 1])
             print(f"  what predicts the estimated arm's regret: corr with "
                   f"density L1 {c_l1:+.2f}, with |log sigma-at-mode "
-                  f"error| {c_sm:+.2f}")
+                  f"error| {c_sm:+.2f}, with weight-profile rms "
+                  f"{c_wp:+.2f}, with signed weight bias {c_wb:+.2f} "
+                  f"(negative bias = overweighting)")
     return 0
 
 
