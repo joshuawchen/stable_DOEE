@@ -258,7 +258,7 @@ def solve_map(Cinv, H, xb, y, nll, dnll, x0, tol=1e-9, maxit=200):
     for _ in range(maxit):
         e = y - H @ x
         r = x - xb
-        g = Cinv @ r + H.T @ dnll(e)
+        g = Cinv @ r - H.T @ dnll(e)
         if np.max(np.abs(g)) < tol:
             return x, J(x), True
         # per-ob curvature of nll by central difference, clipped to >= 0
@@ -283,7 +283,7 @@ def solve_map(Cinv, H, xb, y, nll, dnll, x0, tol=1e-9, maxit=200):
             return x, j0, False
         x = xn
     return x, J(x), np.max(np.abs(Cinv @ (x - xb)
-                                  + H.T @ dnll(y - H @ x))) < 100 * tol
+                                  - H.T @ dnll(y - H @ x))) < 100 * tol
 
 
 def multistart_map(Cinv, H, xb, y, nll, dnll, starts):
