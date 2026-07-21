@@ -632,6 +632,12 @@ def main():
                          "the first record ensemble the flat criterion plus "
                          "the calibrated default under-smoothed at 347 bins "
                          "(sigma at mode 0.24 vs 0.50); lam 30 restored it")
+    ap.add_argument("--junction-frac", type=float, default=0.98,
+                    help="export handoff: the estimate is trusted out to "
+                         "this fraction of probability mass per side; "
+                         "beyond it the Gaussian-capped continuation "
+                         "governs. 1.0 disables the retraction (the "
+                         "continuation then only acts past the data)")
     ap.add_argument("--adaptive", action="store_true",
                     help="estimate with estimate_adaptive (cross-split "
                          "one-SE smoothing selection); refuses --lam "
@@ -879,7 +885,8 @@ def main():
         xg = cache["stable_min"] + np.arange(len(cache["slopes_log"])) \
             * cache["dx"]
         pi = analytic_density(spec_inj, xg)
-    gaussian_tails(cache, np.asarray(xg), np.asarray(pi), sd, rep)
+    gaussian_tails(cache, np.asarray(xg), np.asarray(pi), sd, rep,
+                   junction_frac=a.junction_frac)
     png = save_density_plot(data / "testbed_density.png", obs, hofx, xg, pi,
                             inj, a.seed + 2, a.adaptive, cache=cache)
     rep.info(f"density plot written to {png}" if png else
