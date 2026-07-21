@@ -36,7 +36,9 @@ A instance and n accumulates across windows. EDA members sample a Gaussian
 posterior calibrated to the ASSUMED R: kernel error first order in the R
 error and the non-Gaussianity, irreducible with n. An exact-posterior
 filter's members sample the posterior under the current pi-hat: kernel
-error second order, vanishing at the fixed point pi-hat = pi. PFF inherits
+error vanishing at the fixed point pi-hat = pi (away from it, first
+order in the density error, damped by fresh model noise; see
+NOTES_CONVERGENCE.md). PFF inherits
 the exact guarantee in the idealized limit and finite-K approximations
 otherwise. The exchangeability ratio ER = var(H truth - H members) /
 (2 mean member variance) tests the premise directly (1 iff calibrated).
