@@ -424,22 +424,28 @@ def save_density_plot(path, obs, hofx, xg, pi, inj, seed, adaptive,
 
 
 def gaussian_tails(cache, xg, pi, sd, rep, mass_frac=0.92,
-                   sigma_widest=3.0):
-    """Replace the two-bin tail curvatures with windowed fits and enforce
-    at-least-Gaussian decay in the export.
+                   junction_frac=0.98, sigma_widest=3.0):
+    """Retract the export's interior to the central mass and hand
+    everything beyond it to an at-least-Gaussian continuation.
 
-    The cache's left_dd/right_dd are finite differences over the two
-    outermost trimmed bins -- maximally noisy -- and the old policy
-    clamped any wrong sign to -1e-12, so the assimilated density had
-    EXPONENTIAL tails by convention whatever the truth did. Here the
-    log-density curvature is fit per side over the outer (1 - mass_frac)
-    of probability mass, and the exported curvature is
-        dd = clip(dd_fit, -1/(0.3 sd)^2, -1/(sigma_widest * sd)^2)
-    so beyond the data every tail closes at least as fast as a Gaussian
-    of sigma_widest recovered sigmas (and no faster than 0.3 of one,
-    against spiky edge fits). Tails the data measure as thinner keep
-    their measured curvature; this is export policy, not estimation --
-    the recovered density itself is untouched."""
+    Two measured lessons shaped this. First, the old two-bin tail
+    curvature was noise, and clamping its wrong sign to -1e-12 gave the
+    assimilated density EXPONENTIAL tails by convention. Second, fixing
+    only the beyond-the-data curvature changed NOTHING in the DA -- the
+    d800 rerun reproduced every EvolvingSigma and regret digit --
+    because no evaluated departure ever crossed the trimmed edge: the
+    misbehavior lives in the outer-mass INTERIOR, where the fit itself
+    coasts and flares (measured right-side log-curvature +0.022) and
+    those slopes were exported verbatim.
+
+    So the export now stops trusting the estimate beyond the
+    junction_frac mass point per side. The interior slopes are cut
+    there, the boundary slope is refit locally, and the continuation
+    curvature is the windowed fit over the outer (1 - mass_frac) of
+    mass, clipped to [-1/(0.3 sd)^2, -1/(sigma_widest sd)^2]: beyond
+    the junction every tail closes at least as fast as a Gaussian of
+    sigma_widest recovered sigmas. Export policy only -- the recovered
+    density and its plot stay untouched."""
     lo, hi = cache["stable_min"], cache["stable_max"]
     sel = (xg >= lo) & (xg <= hi) & (pi > 0)
     x_in, p_in = xg[sel], pi[sel]
@@ -448,12 +454,14 @@ def gaussian_tails(cache, xg, pi, sd, rep, mass_frac=0.92,
     c = c / max(c[-1], 1e-300)
     dd_cap = -1.0 / (sigma_widest * max(sd, 1e-6)) ** 2
     dd_flr = -1.0 / (0.3 * max(sd, 1e-6)) ** 2
+    dds = {}
     for side, mask in (("left_dd", c <= 1.0 - mass_frac),
                        ("right_dd", c >= mass_frac)):
         xs, ps = x_in[mask], p_in[mask]
         if xs.size < 6:
             k = min(8, x_in.size)
-            xs, ps = (x_in[:k], p_in[:k]) if side == "left_dd"                 else (x_in[-k:], p_in[-k:])
+            xs, ps = (x_in[:k], p_in[:k]) if side == "left_dd" \
+                else (x_in[-k:], p_in[-k:])
         dd_fit = np.nan
         if xs.size >= 3:
             try:
@@ -461,14 +469,41 @@ def gaussian_tails(cache, xg, pi, sd, rep, mass_frac=0.92,
             except Exception:
                 pass
         dd = dd_fit if np.isfinite(dd_fit) else dd_cap
-        dd = float(np.clip(dd, dd_flr, dd_cap))
-        sig_t = float(np.sqrt(-1.0 / dd))
-        rep.info(f"{side}: fitted log-curvature "
-                 f"{dd_fit if np.isfinite(dd_fit) else float('nan'):+.3f} "
-                 f"over {xs.size} outer bins -> exported {dd:+.3f} "
-                 f"(tail sigma {sig_t:.2f}; widest allowed "
-                 f"{sigma_widest:.0f} x recovered sd {sd:.2f})")
-        cache[side] = dd
+        dds[side] = float(np.clip(dd, dd_flr, dd_cap))
+
+    # retract the interior to the central junction_frac of mass
+    i_lo = int(np.searchsorted(c, 1.0 - junction_frac))
+    i_hi = int(np.searchsorted(c, junction_frac, side="right"))
+    i_hi = max(i_hi, i_lo + 8)
+    xj, pj = x_in[i_lo:i_hi], p_in[i_lo:i_hi]
+    logp = np.log(pj + 1e-300)
+    slopes = np.empty_like(logp)
+    slopes[0] = (logp[1] - logp[0]) / dxg
+    slopes[-1] = (logp[-1] - logp[-2]) / dxg
+    slopes[1:-1] = (logp[2:] - logp[:-2]) / (2 * dxg)
+    # boundary slopes from short local fits, not two bins
+    ke = min(5, xj.size)
+    slopes[0] = float(np.polyfit(xj[:ke], logp[:ke], 1)[0])
+    slopes[-1] = float(np.polyfit(xj[-ke:], logp[-ke:], 1)[0])
+    intercepts = logp - slopes * xj
+    cache.update({"stable_min": xj[0], "stable_max": xj[-1],
+                  "slopes_log": slopes, "intercepts_log": intercepts,
+                  "left_log_slope": slopes[0],
+                  "left_log_int": intercepts[0],
+                  "right_log_slope": slopes[-1],
+                  "right_log_int": intercepts[-1],
+                  "left_dd": dds["left_dd"], "right_dd": dds["right_dd"],
+                  "kept_mass": float(pj.sum() * dxg)})
+    for side in ("left_dd", "right_dd"):
+        sig_t = float(np.sqrt(-1.0 / dds[side]))
+        rep.info(f"{side}: exported {dds[side]:+.3f} (tail sigma "
+                 f"{sig_t:.2f}; widest allowed {sigma_widest:.0f} x "
+                 f"recovered sd {sd:.2f})")
+    rep.info(f"export interior retracted to the central "
+             f"{100 * junction_frac:.0f}% of mass per side: "
+             f"[{xj[0]:+.2f}, {xj[-1]:+.2f}] (was [{lo:+.2f}, {hi:+.2f}]); "
+             f"beyond it the Gaussian-capped continuation governs, which "
+             f"is the region the DA actually evaluates")
 
 
 def oracle_cache(spec_inj):
