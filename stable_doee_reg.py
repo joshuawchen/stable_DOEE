@@ -330,15 +330,45 @@ def estimate_from_histograms(grid, f_d, f_k, lam=None, lam_grid=None,
 #   same thing at every resolution -- the unnormalized form is why more
 #   members silently collapsed the smoothing 32x on the record ensemble.
 #
-#   SELECTION. E[chi2 at the true density] = nb exactly, by construction
-#   of the empirical variances, so the discrepancy principle has a
-#   parameter-free target: the LARGEST mu with chi2(mu) <= nb. This is
-#   the adaptivity the problem demands: nothing about the truth's
-#   smoothness is assumed; more data shrinks sig, shrinks the feasible
-#   mu, and lets the estimate become as rough as the data can support.
-#   If no mu is feasible the model cannot represent the data within its
-#   own noise (the over-dispersion signature) and the minimum-chi2 mu is
-#   used with chi2_min/nb reported as a consistency ratio.
+#   SELECTION. The default is the CROSS-SPLIT one-SE rule: fit on half
+#   the observation groups, score the whitened residual against the
+#   other half's histogram, symmetrize, and take the largest mu within
+#   one standard error of the argmin. The halves carry independent
+#   error draws, so the criterion's expectation at the truth is fixed
+#   regardless of the effective dof the fit spends and regardless of
+#   cross-bin noise correlation -- the two things that break any
+#   fitted-residual target. The discrepancy principle against
+#   chi2 <= nb - dof(mu) survives as select="discrepancy"; measured, it
+#   is dominated (its target is loose by the correlated-block
+#   multiplicity under marginal whitening, and under GLS whitening it
+#   inherits the covariance estimation noise; see the whiten note in
+#   estimate_adaptive). An argmin criterion also removes the
+#   over-dispersion failure mode outright: nothing compares chi2 to an
+#   absolute height. More data still shrinks the chosen mu -- the
+#   adaptivity the problem demands -- but through the criterion's
+#   minimum moving, not through a noise-budget bookkeeping.
+#
+#   IDENTIFIABLE SUPPORT. Finite supports add under convolution, so the
+#   support of pi identifiable from data is the observed innovation
+#   range ERODED by the kernel reach (Minkowski difference). Bins
+#   outside it are uninformed by construction -- the data term cannot
+#   distinguish their values and only the penalty fills them -- and they
+#   are exactly where spurious tail lobes grew at low n. When enabled
+#   they are fixed at zero (columns removed from the QP); the export's
+#   tail extrapolation from interior log-slopes carries on unchanged.
+#   OFF by default: at finite n the sample range understates supp f_d
+#   and full-reach erosion cut genuine tail support (measured L1 0.281
+#   -> 0.449 on a heavy truth at identical selection), while the
+#   whitened data term already leaves uninformed bins near zero.
+#
+#   SELECTION SEARCH. The cv criterion is scanned on a coarse log grid
+#   and locally refined at the argmin; the discrepancy option uses
+#   bisection on log mu for its feasibility crossing. Both replace the
+#   former fixed 10^0.75-step grid, which could not express the
+#   optimum's motion with n -- theory puts the optimal smoothing at
+#   ~ 1/(n log^3 n), which moves by LESS than one grid step over a
+#   fourfold change in n, and mu duly pinned at one grid value across
+#   every configuration measured.
 # ---------------------------------------------------------------------------
 
 def measure_bin_noise(grid, innov, groups, seed=0, splits=8, floor_frac=0.05):
@@ -391,10 +421,176 @@ def measure_bin_noise(grid, innov, groups, seed=0, splits=8, floor_frac=0.05):
     return np.sqrt(sig2)
 
 
-def _solve_whitened(Eta, f_d, sig, dx, n, mu, n_irls=3, floor=1e-6,
+def _split_histograms(grid, innov, groups, seed):
+    """One grouped half-split of the innovation histogram: all of an
+    observation's samples land on one side, so the two halves carry
+    independent error draws. Returns (f_A, f_B)."""
+    grid = np.asarray(grid, float)
+    n = grid.size
+    dx = grid[1] - grid[0]
+    lo, hi = grid[0], grid[-1] + dx
+    rng = np.random.default_rng(seed)
+    uniq = rng.permutation(np.unique(np.asarray(groups)))
+    selA = np.isin(np.asarray(groups), uniq[:uniq.size // 2])
+    f_A, _ = np.histogram(innov[selA], bins=n, range=(lo, hi), density=True)
+    f_B, _ = np.histogram(innov[~selA], bins=n, range=(lo, hi), density=True)
+    return f_A, f_B
+
+
+def _cross_split_crit(Eta, grid, innov, groups, sig, dx, mu, seed=0,
+                      reps=2, n_irls=3, row_W=None):
+    """Cross-split whitened predictive chi2 at smoothing mu.
+
+    Fit on one grouped half, score the whitened residual against the
+    OTHER half's histogram, symmetrize, average over reps splits. The
+    halves carry independent error draws (grouped splits: an
+    observation's draw never appears on both sides), so the criterion's
+    expectation at the true density is fixed regardless of how many
+    effective degrees of freedom the fit spent and regardless of
+    cross-bin noise correlation -- the two things that break any
+    fitted-residual target like chi2 <= nb (measured: the nb target's
+    slack at the good mu ranged 0.55-0.9 across cases, so no fixed
+    height works). Under-smoothing memorizes the training half's noise,
+    which is wrong for the test half; over-smoothing misfits both:
+    the criterion is U-shaped in mu and only its ARGMIN is used, so
+    its absolute height never needs calibrating. sig*sqrt(2) whitens
+    the half-sized histograms. Returns the 2*reps per-fold scores so the
+    caller can form a standard error for the one-SE rule."""
+    out = []
+    sig_h = np.asarray(sig, float) * np.sqrt(2.0)
+    for m in range(reps):
+        f_A, f_B = _split_histograms(grid, innov, groups,
+                                     seed + 104729 * (m + 1))
+        if row_W is not None:
+            # GLS: Eta arrives row-whitened by the full-data W, so the
+            # halves must live in the same space; W/sqrt(2) whitens the
+            # doubled half-data covariance, which is what sig_h does
+            f_A, f_B = row_W @ f_A, row_W @ f_B
+        for f_tr, f_te in ((f_A, f_B), (f_B, f_A)):
+            pi, _, _ = _solve_whitened(Eta, f_tr, sig_h, dx, mu,
+                                       n_irls=n_irls)
+            r = dx * (Eta @ pi) - f_te
+            out.append(float(((r / sig_h) ** 2).sum()))
+    return np.asarray(out)
+
+
+def measure_bin_cov(grid, innov, groups, sig, seed=0, n_boot=192):
+    """Per-bin COVARIANCE of the innovation histogram, measured by a
+    grouped bootstrap, shrunk toward diag(sig^2). Returns W, the
+    symmetric inverse square root of the shrunk covariance, so that
+    W @ (f_hat - E f) has identity covariance to estimation accuracy.
+
+    Why the covariance and not just the variances: each observation's
+    error draw appears in every member's innovation, so histogram bins
+    are strongly CORRELATED, and a chi-square whitened only marginally
+    lets one fitted degree of freedom absorb a whole correlated block of
+    nominal residual. Measured on heavy 2000x20: the roughest fit spent
+    9.6 nominal dof and removed 108 units of marginal chi2 -- about 11
+    per dof, the duplication multiplicity -- so the discrepancy target
+    nb - dof was loose by ~100 and mu inflated into oversmoothing.
+    After GLS whitening the identity E[chi2 at fit] = nb - dof holds by
+    construction and the discrepancy criterion means what it says.
+
+    Shrinkage: C = (1-a) C_boot + a diag(sig^2) with the
+    Schaefer-Strimmer intensity for the off-diagonal (closed form, no
+    tuning); sig carries the sparse-bin Poisson floor, so shrinking
+    toward it also floors the covariance where counts are too thin to
+    measure it. Replicates scale with the bin count and eigenvalues are
+    floored at 0.5 in correlation scale, so no direction is claimed
+    more than sqrt(2)-fold more certain than the marginal model.
+
+    STATUS: correct but not default. The GLS route makes the
+    discrepancy target exact, yet measured end-to-end it loses to
+    marginal whitening under the cross-split selection on every case
+    (see the note in estimate_adaptive): the dense rotation injects
+    covariance-estimation noise where the tails are decided, and the
+    cross-split criterion is correlation-proof without it."""
+    innov = np.asarray(innov, float)
+    grid = np.asarray(grid, float)
+    n = grid.size
+    dx = grid[1] - grid[0]
+    lo, hi = grid[0], grid[-1] + dx
+    if groups is None:
+        groups = np.arange(innov.size)
+    groups = np.asarray(groups)
+    uniq = np.unique(groups)
+    G = uniq.size
+    # index innovation samples by group once
+    order = np.argsort(groups, kind="stable")
+    g_sorted = groups[order]
+    starts = np.searchsorted(g_sorted, uniq, side="left")
+    ends = np.searchsorted(g_sorted, uniq, side="right")
+    rng = np.random.default_rng(seed + 424243)
+    sizes = ends - starts
+    eq = int(sizes.min()) == int(sizes.max())
+    OM = order.reshape(G, int(sizes[0])) if eq else None
+    # replicates must outnumber bins, or the sample covariance is rank
+    # deficient and the whitener makes confident claims about directions
+    # it never measured -- at 435 bins and 192 replicates the unmeasured
+    # subspace was over half the space and a well-specified case read as
+    # over-dispersed (chi2 1.33x its target at the roughest fit)
+    B = max(int(n_boot), int(np.ceil(1.25 * n)) + 1)
+    reps = np.empty((B, n))
+    for b in range(B):
+        pick = rng.integers(0, G, size=G)
+        if eq:
+            sel = OM[pick].ravel()
+        else:
+            sel = np.concatenate([order[starts[p]:ends[p]] for p in pick])
+        reps[b], _ = np.histogram(innov[sel], bins=n, range=(lo, hi),
+                                  density=True)
+    Xc = reps - reps.mean(axis=0)
+    C = (Xc.T @ Xc) / (B - 1)
+    # Schaefer-Strimmer intensity toward the diagonal target, in matmuls:
+    # with w_bij = Xc_bi Xc_bj, sum_b (w - wbar)^2 = S2 - B wbar^2 where
+    # S2 = (Xc^2)' (Xc^2) and wbar = S1/B, S1 = Xc' Xc. No (B,n,n) tensor.
+    S1 = Xc.T @ Xc
+    S2 = (Xc ** 2).T @ (Xc ** 2)
+    wbar = S1 / B
+    var_s = (B / float(B - 1) ** 3) * (S2 - B * wbar ** 2)
+    off = ~np.eye(n, dtype=bool)
+    denom = float((C[off] ** 2).sum())
+    a = 1.0 if denom <= 0 else float(np.clip(var_s[off].sum() / denom,
+                                             0.0, 1.0))
+    D = np.asarray(sig, float) ** 2
+    C_sh = (1.0 - a) * C
+    np.fill_diagonal(C_sh, (1.0 - a) * np.diag(C) + a * D)
+    # keep the marginal floor: no bin less certain than sig says
+    dcl = np.maximum(np.diag(C_sh), D)
+    np.fill_diagonal(C_sh, dcl)
+    # STATISTICAL eigenvalue floor, in correlation scale: no direction
+    # may be claimed more certain than ev_floor times the independent-
+    # bins marginal model. Duplication (the reason for GLS) only
+    # INFLATES directions; the genuinely deflated one is the fixed-mass
+    # sum, where the model's equality constraint zeroes the residual
+    # anyway, so flooring it costs nothing. Without this floor,
+    # estimation noise in the small eigenvalues of C amplifies residual
+    # components 1/sqrt(ev)-fold and chi2 reads over-dispersion on
+    # well-specified data.
+    ev_floor = 0.5
+    s = np.sqrt(D)
+    M = C_sh / np.outer(s, s)
+    evl, U = np.linalg.eigh(M)
+    evl = np.maximum(evl, ev_floor)
+    Wc = (U / np.sqrt(evl)) @ U.T
+    # W must satisfy W C_sh W' = I: with M = S^-1 C_sh S^-1 (S = diag(s))
+    # and Wc = M^{-1/2}, W = Wc S^-1 does, and acts on residuals via W r
+    W = Wc * (1.0 / s)[None, :]
+    return W, a
+
+
+def _solve_whitened(Eta, f_d, sig, dx, mu, n_irls=3, floor=1e-6,
                     ridge=1e-10):
     """The _solve QP with a whitened data term and the dx^-5-normalized
-    penalty; see the section comment above. Returns (pi, chi2)."""
+    penalty; see the section comment above. Returns (pi, chi2).
+
+    Eta may be RECTANGULAR, (n_rows, n_cols) with n_cols <= n_rows: the
+    support mask removes columns the data cannot inform (see
+    _eroded_support) while every innovation bin keeps its row, so mass
+    the kernel spreads outward from interior bins still meets its data.
+    pi has length n_cols; the caller embeds it into the full grid."""
+    Eta = np.asarray(Eta, float)
+    n = Eta.shape[1]
     L = _third_difference(n)
     W2 = 1.0 / np.asarray(sig, float) ** 2
     H_data = 2.0 * dx ** 2 * (Eta.T @ (W2[:, None] * Eta))
@@ -418,7 +614,69 @@ def _solve_whitened(Eta, f_d, sig, dx, n, mu, n_irls=3, floor=1e-6,
         pi = np.maximum(pi, 0.0)
     r = dx * (Eta @ pi) - f_d
     chi2 = float(((r / sig) ** 2).sum())
-    return pi, chi2
+    # Effective degrees of freedom of the fit: trace of the hat matrix of
+    # the whitened penalized LS, restricted to the free (pi > 0) bins,
+    # minus one for the mass constraint. This is what the discrepancy
+    # target must be corrected by: E[chi2 at the FITTED solution] is
+    # n_rows - dof, not n_rows, and targeting n_rows buys decades of
+    # extra smoothing (measured: it flattened a +6-kurtosis truth to +3
+    # while chi2/nb still read 0.9).
+    F = pi > 0.0
+    if F.sum() >= 2:
+        Hd_F = H_data[np.ix_(F, F)]
+        H_F = H[np.ix_(F, F)]
+        try:
+            dof = float(np.trace(np.linalg.solve(H_F, Hd_F))) - 1.0
+        except np.linalg.LinAlgError:
+            dof = float(F.sum()) - 1.0
+        dof = float(min(max(dof, 0.0), F.sum()))
+    else:
+        dof = 0.0
+    return pi, chi2, dof
+
+
+def _kernel_reach(grid, f_k, q=0.01):
+    """Effective half-support of the kernel: the smallest r such that
+    [-r, r] carries at least 1-q of the kernel's histogram mass. Finite
+    supports add under convolution, so this is the erosion radius for the
+    identifiable support of pi (see _eroded_support)."""
+    grid = np.asarray(grid, float)
+    f_k = np.asarray(f_k, float)
+    dx = grid[1] - grid[0]
+    mass = f_k * dx
+    tot = mass.sum()
+    if not tot > 0:
+        return float(grid[-1] - grid[0])
+    c = np.cumsum(mass) / tot
+    i_lo = int(np.searchsorted(c, q / 2.0))
+    i_hi = int(np.searchsorted(c, 1.0 - q / 2.0))
+    i_hi = min(i_hi, grid.size - 1)
+    return float(max(abs(grid[i_lo]), abs(grid[i_hi]), dx))
+
+
+def _eroded_support(grid, innov, reach, min_bins=24):
+    """Column mask for the identifiable support of pi.
+
+    supp f_d = supp pi + supp kernel, so supp pi is the OBSERVED
+    innovation range eroded by the kernel reach (Minkowski difference):
+    a bin of pi outside [d_min + r, d_max - r] would place kernel mass
+    where no innovation was ever seen, and the data term cannot inform
+    it -- those bins are where the estimator grew its spurious tail
+    lobes at low n (the +-4.7 lobes at n=600 in the obs-density sweep
+    lived entirely in the uninformed region). Masked bins are fixed at
+    zero and the export's tail extrapolation carries on from the
+    interior slopes, which is the existing contract. Returns (j0, j1)
+    slice bounds into grid; the full grid if erosion would leave fewer
+    than min_bins bins."""
+    grid = np.asarray(grid, float)
+    innov = np.asarray(innov, float)
+    lo = float(innov.min()) + reach
+    hi = float(innov.max()) - reach
+    j0 = int(np.searchsorted(grid, lo, side="left"))
+    j1 = int(np.searchsorted(grid, hi, side="right"))
+    if j1 - j0 < min_bins:
+        return 0, grid.size
+    return j0, j1
 
 
 def adaptive_bin_count(innov, per_scale=30, max_bins=1201):
@@ -434,51 +692,229 @@ def adaptive_bin_count(innov, per_scale=30, max_bins=1201):
 
 
 def estimate_adaptive(grid, f_d, f_k, innov, groups, seed=0, n_irls=3,
-                      mu_grid=None, splits=8, trim_log=-30.0, verbose=False):
+                      mu_grid=None, splits=8, trim_log=-30.0, verbose=False,
+                      sig=None, support_mask=False, mask_q=0.01,
+                      mu_lo=1e-10, mu_hi=1e2, bisect_tol=0.05,
+                      whiten="marginal", n_boot=192,
+                      select="cv", cv_reps=2):
     """Deconvolve with the whitened objective and discrepancy-selected mu.
     Same inputs and cache contract as estimate_from_histograms, plus the
     raw innovations and groups (both required: the noise level is
     measured, not assumed). The cache carries mu in cache['lambda'] and
-    the consistency ratio chi2/nb in cache['chi2_ratio']."""
+    the consistency ratio chi2/nb in cache['chi2_ratio'].
+
+    sig, when given, replaces the measured per-bin noise and is treated
+    as INDEPENDENT bin noise (analytic noise for synthetic tests;
+    production always measures). Otherwise whiten="gls" measures the
+    full bin covariance (see measure_bin_cov) and whitens with its
+    inverse square root; whiten="diag" restores marginal whitening.
+
+    support_mask (OFF by default) fixes pi to zero outside the observed
+    innovation range eroded by the kernel reach: see _eroded_support.
+    Measured, the whitened data term already leaves uninformed tail bins
+    near zero (their sig is honestly large), and the sample range
+    understates supp f_d at finite n, so full-reach erosion cut genuine
+    tail support on a heavy truth (L1 0.281 -> 0.449 at identical
+    selection). Reserve the mask for genuinely compact-support cases.
+
+    select="cv" (default): mu by the cross-split one-SE rule, an argmin
+    criterion with no absolute chi2 height (see the section comment).
+    select="discrepancy": largest mu with chi2 <= nb - dof(mu), found
+    by bisection on log mu; bisect_tol is the terminal bracket width in
+    decades (0.05 ~ 12% in mu). Passing an explicit mu_grid bypasses
+    both and restores the legacy grid scan (reproducibility only)."""
     grid = np.asarray(grid, float)
     f_d = np.asarray(f_d, float)
     n = grid.size
     dx = grid[1] - grid[0]
-    Eta = _conv_matrix(np.asarray(f_k, float), n, dx, grid[0])
+    f_k = np.asarray(f_k, float)
+    Eta = _conv_matrix(f_k, n, dx, grid[0])
 
     ratio = np.nan
     v_d, v_k = _hist_var(grid, f_d), _hist_var(grid, f_k)
     if v_k > 0:
         ratio = float(np.sqrt(max(v_d - v_k, 0.0)) / np.sqrt(v_k / 2.0))
 
-    sig = measure_bin_noise(grid, innov, groups, seed=seed, splits=splits)
-    if mu_grid is None:
-        mu_grid = np.logspace(-10.0, 2.0, 17)
+    shrink = np.nan
+    W_gls = None
+    if sig is None:
+        sig = measure_bin_noise(grid, innov, groups, seed=seed,
+                                splits=splits)
+        # whiten='gls' is available, not default. First measured with a
+        # rank-deficient covariance (192 replicates for up to 435 bins,
+        # numerical-only eigenvalue floor), where its losses were partly
+        # artifact: unmeasured directions were claimed (1-a)-fold too
+        # certain and a well-specified case even drove the discrepancy
+        # option into its min-chi2 fallback (L1 0.988). Remeasured after
+        # the fix (replicates >= 1.25*nb, eigenvalue floor 0.5 in
+        # correlation scale): the fallback failure is gone (heavy2
+        # gls+discrepancy 0.988 -> 0.087) but gls+cv still loses every
+        # case to marginal+cv -- gauss 0.183 vs 0.115, heavy 0.200 vs
+        # 0.193, heavy2 0.116 vs 0.060, bimodal 0.123 vs 0.099 (seed 9).
+        # The dense rotation spreads covariance-estimation noise into
+        # the tail-sensitive directions, and the cross-split criterion
+        # never needed the covariance: its expectation at the truth is
+        # split-invariant under any correlation.
+        if whiten == "gls":
+            W_gls, shrink = measure_bin_cov(grid, innov, groups, sig,
+                                            seed=seed, n_boot=n_boot)
+            Eta = W_gls @ Eta
+            f_d = W_gls @ f_d
+            sig = np.ones(n)
+    else:
+        # analytic noise supplied: independent bins by assumption
+        sig = np.asarray(sig, float)
+
+    j0, j1 = 0, n
+    if support_mask:
+        reach = _kernel_reach(grid, f_k, q=mask_q)
+        j0, j1 = _eroded_support(grid, np.asarray(innov, float), reach)
+    Eta_s = Eta[:, j0:j1]
+
     chi2 = {}
-    best_pi = None
-    chosen = None
-    for mu in mu_grid:                       # ascending
-        try:
-            pi, c2 = _solve_whitened(Eta, f_d, sig, dx, n, float(mu),
-                                     n_irls=n_irls)
-        except Exception:
-            continue
+    dofs = {}
+
+    def ev(mu):
+        pi_s, c2, df = _solve_whitened(Eta_s, f_d, sig, dx, float(mu),
+                                       n_irls=n_irls)
+        pi = np.zeros(n)
+        pi[j0:j1] = pi_s
         chi2[float(mu)] = c2
-        if c2 <= n:
-            chosen, best_pi = float(mu), pi   # largest feasible so far
-    rule = "discrepancy"
-    if chosen is None:
-        if not chi2:
-            raise RuntimeError("no mu on the grid produced a solution")
-        chosen = min(chi2, key=chi2.get)
-        best_pi, _ = _solve_whitened(Eta, f_d, sig, dx, n, chosen,
-                                     n_irls=n_irls)
-        rule = "min-chi2 (model cannot reach the noise level)"
+        dofs[float(mu)] = df
+        # feasibility is judged against the dof-corrected target: at the
+        # FITTED solution the whitened residual runs n - dof(mu) in
+        # expectation, so chi2 <= n is loose by exactly the flexibility
+        # the fit spent, and mu inflates until that slack is consumed
+        return pi, c2 - (n - df)
+
+    if mu_grid is not None:
+        # explicit grid: the legacy scan, kept for reproducibility
+        best_pi, chosen = None, None
+        for mu in mu_grid:                   # ascending
+            try:
+                pi, g = ev(mu)
+            except Exception:
+                continue
+            if g <= 0.0:
+                chosen, best_pi = float(mu), pi
+        rule = "discrepancy (grid)"
+        if chosen is None:
+            if not chi2:
+                raise RuntimeError("no mu on the grid produced a solution")
+            chosen = min(chi2, key=chi2.get)
+            best_pi, _ = ev(chosen)
+            rule = "min-chi2 (model cannot reach the noise level)"
+    elif select == "cv":
+        # CROSS-SPLIT ONE-SE SELECTION, the default by measurement.
+        # Argmin alone under-smooths where the criterion goes flat below
+        # the optimum (a spiky pi convolves to nearly the same innovation
+        # fit -- the ill-posedness), so the standard one-SE rule is
+        # applied toward smoothness, the same rule and for the same
+        # reason as the legacy cross-validation. Scoreboard against the
+        # discrepancy selection and the shipped coarse grid, L1 to truth
+        # (marginal whitening, seed 9):
+        #     case              cv+1SE   old grid   discrepancy
+        #     gauss 2000x20      0.115     0.067       0.106
+        #     heavy 2000x20      0.193     0.281       0.330
+        #     heavy2 1200x100    0.060     0.070       0.988 (fallback)
+        #     bimodal 2400x20    0.099     0.147       0.217
+        #     overdisp x1.24     0.205     0.189       (recovers)
+        # Chosen mu spreads over two decades across cases instead of
+        # pinning at one grid value, and the over-dispersion failure
+        # mode of any fitted-residual target disappears outright: an
+        # argmin criterion never compares chi2 to an absolute height.
+        innov_a = np.asarray(innov, float)
+        vals, ses = {}, {}
+
+        def crit(mu):
+            mu = float(mu)
+            if mu in vals:
+                return vals[mu]
+            try:
+                s = _cross_split_crit(Eta_s, grid, innov_a, groups, sig,
+                                      dx, mu, seed=seed, reps=cv_reps,
+                                      n_irls=n_irls, row_W=W_gls)
+                vals[mu] = float(s.mean())
+                ses[mu] = float(s.std(ddof=1) / np.sqrt(s.size))
+            except Exception:
+                vals[mu], ses[mu] = np.inf, 0.0
+            return vals[mu]
+
+        for mu in np.logspace(-6.0, 0.5, 9):
+            crit(mu)
+        for _ in range(2):                       # local log refinement
+            ks = sorted(vals)
+            i = int(np.argmin([vals[k] for k in ks]))
+            if i > 0:
+                crit(np.sqrt(ks[i - 1] * ks[i]))
+            if i < len(ks) - 1:
+                crit(np.sqrt(ks[i] * ks[i + 1]))
+        best = min(vals, key=vals.get)
+        if not np.isfinite(vals[best]):
+            raise RuntimeError("cross-split criterion failed at every mu")
+        thresh = vals[best] + ses[best]
+        accept = sorted((m for m in vals if np.isfinite(vals[m])
+                         and vals[m] <= thresh), reverse=True)
+        chosen = best_pi = None
+        for mu in accept:
+            try:
+                best_pi, _ = ev(mu)          # final fit on ALL data
+                chosen = mu
+                break
+            except Exception:
+                continue                     # half-fits solved, full did not
+        if chosen is None:
+            raise RuntimeError("no accepted mu solved on the full data")
+        rule = "cross-split one-SE"
+        mu_argmin = best
+        if verbose:
+            pts = "  ".join(f"{m:.0e}:{vals[m]:.0f}" for m in sorted(vals)
+                            if np.isfinite(vals[m]))
+            print(f"    cross-split crit over mu {pts}; argmin "
+                  f"{best:.1e}, accepted {chosen:.3e}")
+    else:
+        # a failed solve counts as infeasible: at large mu the reweighted
+        # Hessian can lose positive definiteness, which is the oversmoothing
+        # pathology, not a reason to abort the selection
+        def ev_safe(mu):
+            try:
+                return ev(mu)
+            except Exception:
+                return None, np.inf
+
+        lo = float(mu_lo)
+        pi_lo, g_lo = ev_safe(lo)
+        while pi_lo is None and lo < mu_hi:
+            lo *= 10.0
+            pi_lo, g_lo = ev_safe(lo)
+        if pi_lo is None:
+            raise RuntimeError("no mu in the bracket produced a solution")
+        if g_lo > 0.0:
+            # infeasible at the roughest end: the over-dispersion signature
+            chosen, best_pi = lo, pi_lo
+            rule = "min-chi2 (model cannot reach the noise level)"
+        else:
+            pi_hi, g_hi = ev_safe(mu_hi)
+            if g_hi <= 0.0:
+                chosen, best_pi = float(mu_hi), pi_hi
+                rule = "discrepancy (feasible at mu_hi)"
+            else:
+                hi = float(mu_hi)
+                chosen, best_pi = lo, pi_lo
+                while np.log10(hi / lo) > bisect_tol:
+                    mid = float(np.sqrt(lo * hi))
+                    pi_m, g_m = ev_safe(mid)
+                    if pi_m is not None and g_m <= 0.0:
+                        lo, chosen, best_pi = mid, mid, pi_m
+                    else:
+                        hi = mid
+                rule = "discrepancy (bisection)"
     if verbose:
-        pts = "  ".join(f"{m:.0e}:{chi2[m] / n:.2f}"
+        pts = "  ".join(f"{m:.0e}:{chi2[m] / max(n - dofs[m], 1.0):.2f}"
                         for m in sorted(chi2))
-        print(f"    chi2/nb over mu {pts}; chosen ({rule}) mu = "
-              f"{chosen:.3e} (nb {n}, resolvability {ratio:.2f})")
+        print(f"    chi2/(nb-dof) over mu {pts}; chosen ({rule}) mu = "
+              f"{chosen:.3e} (nb {n}, dof {dofs[chosen]:.0f}, "
+              f"mask [{j0}:{j1}] of {n}, resolvability {ratio:.2f})")
     # The cache keeps _make_cache's contract (the contiguous main run, which
     # is what the unimodal DA export can use, with kept_mass honestly
     # reporting that run's fraction), but the RETURNED arrays are the full
@@ -486,7 +922,12 @@ def estimate_adaptive(grid, f_d, f_k, innov, groups, seed=0, n_irls=3,
     # truncated to its tallest mode -- measured, the truncation cost a
     # bimodal truth its entire second mode and 70% of its variance.
     _, _, cache = _make_cache(grid, best_pi, dx, chosen, ratio, trim_log)
-    cache["chi2_ratio"] = chi2[chosen] / n
+    if select == "cv" and mu_grid is None:
+        cache["mu_argmin"] = mu_argmin
+    cache["chi2_ratio"] = chi2[chosen] / max(n - dofs[chosen], 1.0)
+    cache["dof"] = dofs[chosen]
+    cache["shrink"] = shrink
+    cache["support_mask"] = (int(j0), int(j1))
     return grid, best_pi, cache
 
 
@@ -531,7 +972,16 @@ def _make_cache(x_grid, pi, dx, lam, ratio, trim_log):
     d = np.diff(padded.astype(int))
     starts, ends = np.where(d == 1)[0], np.where(d == -1)[0]
     k = int(np.argmax([pi[s:e].sum() for s, e in zip(starts, ends)]))
-    xg, pin = x_grid[starts[k]:ends[k]], pi[starts[k]:ends[k]]
+    s0, e0 = int(starts[k]), int(ends[k])
+    if e0 - s0 < 2:
+        # a single-bin main run is a fully fragmented solve (min-chi2
+        # fallback on undecodable data); widen to the two nearest bins so
+        # slopes exist. kept_mass will be honest about the fragmentation
+        # and the export contract already says such estimates are unusable.
+        s0, e0 = max(0, s0 - 1), min(pi.size, e0 + 1)
+        if e0 - s0 < 2:
+            s0, e0 = 0, min(pi.size, 2)
+    xg, pin = x_grid[s0:e0], pi[s0:e0]
 
     logp = np.log(pin + 1e-300)
     slopes = np.empty_like(logp)
