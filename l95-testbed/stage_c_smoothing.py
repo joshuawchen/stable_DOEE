@@ -524,7 +524,9 @@ def run_windows(a):
           f"= {n} obs), members {a.members}, kref {a.kref}, assumed "
           f"{a.assumed_error}, "
           f"{'adaptive' if a.adaptive else f'lam {a.lam:g}'}, sampler "
-          f"{a.sampler} (regret in nats/ob vs each window's true MAP)")
+          f"{a.sampler}, feedback {a.feedback}"
+          f"{f' relax {a.relax:g}' if a.relax != 1.0 else ''}"
+          f" (regret in nats/ob vs each window's true MAP)")
     g_nll0, g_dnll0 = analytic_nll({"kind": "gaussian",
                                     "sigma": a.assumed_error})
     pipes = {"gauss": {"nll": g_nll0, "dnll": g_dnll0, "h": 1e-5,
