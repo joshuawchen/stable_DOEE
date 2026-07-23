@@ -82,7 +82,7 @@ def estimate_arm(y, hofx, spec_inj, seed, lam, adaptive):
     return sd, l1_to_truth(xg, pi, spec_inj)
 
 
-def loo_hofx(y, hofx_post, nll, K, rng):
+def loo_hofx(y, hofx_post, nll, K, rng, defense=0.0):
     """Per-observation importance resampling of the full smoothing
     ensemble into approximate leave-one-out members: the LOO posterior
     differs from the full one by exactly the factor 1/pi(r_i), so
@@ -91,13 +91,36 @@ def loo_hofx(y, hofx_post, nll, K, rng):
     that vanish at a support wall 1/pi(r) is UNBOUNDED and a few
     wall-violating members otherwise absorb all the weight (the known
     IS-LOO failure mode; PSIS or exact per-observation refits are the
-    principled upgrades). Returns the (n, K) member matrix and the mean
-    effective sample size AFTER truncation."""
+    principled upgrades). With defense = delta > 0, weights are computed
+    under the DEFENSIVE MIXTURE (Hesterberg) (1-delta) pi-hat +
+    delta N(0, (3 s)^2), s a robust scale of the pooled residuals: this
+    bounds 1/pi wherever the fed-back density is thin or rough (the ESS
+    collapse observed when an adaptive estimate enters the loop), at an
+    O(delta) bias in the LOO target. pi-hat is normalized numerically on
+    a grid so delta means the same thing for every nll convention.
+    Default 0 reproduces every pinned table exactly. Returns the (n, K)
+    member matrix and the mean effective sample size AFTER truncation."""
     n, Kref = hofx_post.shape
+    lmix = None
+    if defense > 0.0:
+        r_all = (y[:, None] - hofx_post).ravel()
+        s = 1.4826 * float(np.median(np.abs(r_all - np.median(r_all))))
+        sg = 3.0 * max(s, 1e-6)
+        grid = np.arange(-10.0 * sg, 10.0 * sg + 1e-9, sg / 200.0)
+        lpg = -np.asarray(nll(grid), float)
+        mg = lpg.max()
+        lz = mg + np.log(np.sum(np.exp(lpg - mg)) * (grid[1] - grid[0]))
+        lgc = -np.log(sg * np.sqrt(2.0 * np.pi)) + np.log(defense)
+
+        def lmix(r):
+            lp = -np.asarray(nll(r), float) - lz + np.log1p(-defense)
+            return np.logaddexp(lp, lgc - 0.5 * (r / sg) ** 2)
     out = np.empty((n, K))
     ess = np.empty(n)
     for i in range(n):
-        lw = np.asarray(nll(y[i] - hofx_post[i]), float)
+        r = y[i] - hofx_post[i]
+        lw = (-lmix(r) if lmix is not None
+              else np.asarray(nll(r), float))
         lw -= lw.max()
         w = np.exp(lw)
         w = np.minimum(w, w.mean() * np.sqrt(Kref))
@@ -131,7 +154,8 @@ def one_window(a, T, seed, quiet=False):
     arms["prior"] = Heff @ Zprior
     arms["residual"] = hofx_post[:, :a.members].copy()
     arms["loo"], mean_ess = loo_hofx(y, hofx_post, nll, a.members,
-                                     np.random.default_rng(seed + 29))
+                                     np.random.default_rng(seed + 29),
+                                     a.loo_defense)
 
     row = {"n": n, "acc": info["acc_rate"], "ess": mean_ess,
            "sigma_true": spec_inj["sample_sigma"],
@@ -213,7 +237,11 @@ def export_gap(spec, xg, pi, sd, assumed):
     half = 12.0 * max(sd, assumed)
     nll_e, _ = spec_nll(spec, half)
     fine = np.arange(-half, half + 1e-9, 0.02)
-    q = np.exp(-np.asarray(nll_e(fine)))
+    ln = -np.asarray(nll_e(fine), float)
+    m_ = np.nanmax(ln)
+    if not np.isfinite(m_):
+        return float("nan")
+    q = np.exp(ln - m_)
     tq = q.sum() * 0.02
     q = q / tq if tq > 0 else q
     p = np.interp(fine, xg, pi, left=0.0, right=0.0)
@@ -223,14 +251,21 @@ def export_gap(spec, xg, pi, sd, assumed):
 
 
 def density_to_spec(y, hofx, a, seed):
-    """DOEE through the export the DA consumes; None if the gates refuse."""
+    """DOEE through the export the DA consumes; None if the gates refuse
+    OR the export machinery fails outright (e.g. no interior mode). An
+    export failure must not kill the run: in --feedback raw the export
+    is diagnostic-only and the loop proceeds on the raw estimate."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         xg, pi, cache = estimate_density(y, hofx, seed, a.lam, a.adaptive)
     sd, _ = moments_on(xg, pi)
-    gaussian_tails(cache, xg, pi, sd, Quiet(False))
-    spec, _ = DY.to_spec(cache)
-    return (None if DY.check(spec) else spec), sd, (xg, pi)
+    try:
+        gaussian_tails(cache, xg, pi, sd, Quiet(False))
+        spec, _ = DY.to_spec(cache)
+        spec = None if DY.check(spec) else spec
+    except Exception:
+        spec = None
+    return spec, sd, (xg, pi)
 
 
 def pipeline_window(a, T, seed, quiet=False):
@@ -381,7 +416,8 @@ def pipeline_window(a, T, seed, quiet=False):
             Zp = sample_posterior(cur_nll, cur_dnll, cur_h, sub, it)
             hofx_loo, ess = loo_hofx(
                 y, Heff @ Zp, cur_nll, a.members,
-                np.random.default_rng(seed + 29 + 1000 * sub + it))
+                np.random.default_rng(seed + 29 + 1000 * sub + it),
+                a.loo_defense)
             spec, sd, (xg, pi) = density_to_spec(y, hofx_loo, a, seed + 2)
             if spec is None:
                 break
@@ -462,6 +498,8 @@ def run_pipeline(a):
           f"sampler {a.sampler}"
           + (f" (inflation {a.pff_inflation})" if a.sampler == "pff"
              else "")
+          + (f", loo-defense {a.loo_defense:g}" if a.loo_defense > 0
+             else "")
           + f", max-iters {a.max_iters}, {a.replicates} replicates "
           f"per T (regret in nats/ob vs the true-density MAP)")
     for T in Ts:
@@ -526,6 +564,7 @@ def run_windows(a):
           f"{'adaptive' if a.adaptive else f'lam {a.lam:g}'}, sampler "
           f"{a.sampler}, feedback {a.feedback}"
           f"{f' relax {a.relax:g}' if a.relax != 1.0 else ''}"
+          f"{f' loo-defense {a.loo_defense:g}' if a.loo_defense > 0 else ''}"
           f" (regret in nats/ob vs each window's true MAP)")
     g_nll0, g_dnll0 = analytic_nll({"kind": "gaussian",
                                     "sigma": a.assumed_error})
@@ -554,7 +593,8 @@ def run_windows(a):
     def loo_row(y_v, st, rk):
         Zv = sample_post(y_v, st, rk)
         h_v, ess_v = loo_hofx(y_v, Heff @ Zv, st["nll"], a.members,
-                              np.random.default_rng(rk.integers(2 ** 31)))
+                              np.random.default_rng(rk.integers(2 ** 31)),
+                              a.loo_defense)
         if a.center_innovations:
             y_v = y_v - float(np.mean(y_v[:, None] - h_v))
         return y_v, h_v, ess_v
@@ -656,12 +696,18 @@ def run_windows(a):
                                             else st["sd"],
                                             a.assumed_error)
             if spec is not None:
-                st["spec"], st["sd"] = spec, sd
+                st["spec"] = spec
+            raw_ok = (a.feedback == "raw" and name != "gauss"
+                      and np.isfinite(sd) and sd > 0)
+            if spec is not None or raw_ok:
+                st["sd"] = sd
                 if name == "gauss":
                     st["nll"], st["dnll"] = analytic_nll(
                         {"kind": "gaussian", "sigma": sd})
                     st["h"] = 1e-5
                 elif a.feedback == "raw":
+                    # the raw loop never stalls on an export failure:
+                    # the export is diagnostic-only on this path
                     fineg = np.arange(-8.0, 8.0001, 0.02)
                     pf = np.interp(fineg, xg, pi, left=0.0, right=0.0)
                     if a.relax < 1.0 and st.get("pf") is not None:
@@ -714,6 +760,7 @@ def selftest():
         sigma_b, length_scale, persistence = 0.6, 1.0, 0.9
         m_per_time, members, kref = 40, 50, 400
         lam, adaptive = 3.0, False
+        loo_defense = 0.0
     a = A0()
     rng = np.random.default_rng(3)
     C = prior_cov(a.sigma_b, a.length_scale)
@@ -748,11 +795,21 @@ def selftest():
         "loo should recover the width better than naive residuals"
     assert row["ess"] > 0.4 * a.kref, "loo weights degenerate"
 
+    a.loo_defense = 0.01
+    row_d = one_window(a, 5, 21, quiet=True)
+    print(f"defended loo (delta 0.01): sd {row_d['sd_loo']:.3f} "
+          f"(undefended {row['sd_loo']:.3f}), ESS {row_d['ess']:.0f}")
+    assert abs(row_d["sd_loo"] - row["sd_loo"]) < 0.05, \
+        "defensive mixture moved the null recovery"
+    assert row_d["ess"] > 0.4 * a.kref, "defended weights degenerate"
+    a.loo_defense = 0.0
+
     class P0:
         density, scale = "gaussian", 1.0
         sigma_b, length_scale, persistence = 0.6, 1.0, 0.9
         m_per_time, members, kref = 40, 50, 400
         lam, adaptive = 3.0, False
+        loo_defense = 0.0
         assumed_error, max_iters, iter_tol = 0.4, 3, 0.05
         sampler, pff_inflation = "mala", 1.05
     p = P0()
@@ -847,6 +904,11 @@ def main():
     ap.add_argument("--relax", type=float, default=1.0,
                     help="damped density update in raw feedback: new = "
                          "relax*estimate + (1-relax)*previous")
+    ap.add_argument("--loo-defense", type=float, default=0.0,
+                    help="defensive-mixture delta in the LOO weights: "
+                         "(1-delta) pi-hat + delta N(0, (3 s)^2), "
+                         "bounding 1/pi and protecting the ESS; 0 "
+                         "reproduces every pinned table exactly")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
