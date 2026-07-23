@@ -174,7 +174,7 @@ def raw_nll_from_estimate(xg, pi):
     whether the export projection is the loop's unstable element."""
     xg = np.asarray(xg, float)
     p = np.maximum(np.asarray(pi, float), 0.0)
-    tot = np.trapz(p, xg)
+    tot = float(p.sum() * (xg[1] - xg[0]))
     if tot > 0:
         p = p / tot
     idx = np.nonzero(p > p.max() * 1e-6)[0]
