@@ -109,13 +109,21 @@ def sigma_at_mode(cache, mode, window=None):
     c = _centers(cache)
     s = np.asarray(cache["slopes_log"], float)
     window = window if window is not None else 3.0 * cache["dx"]
-    sel = np.abs(c - mode) <= window
+    tol = 1.0 + 1e-9        # one-ulp guard: keep boundary centers in
+    sel = np.abs(c - mode) <= window * tol
     if sel.sum() < 3:
-        sel = np.abs(c - mode) <= 5.0 * cache["dx"]
+        sel = np.abs(c - mode) <= 5.0 * cache["dx"] * tol
     if sel.sum() < 3:
         raise ValueError("too few bins near the mode for a quadratic fit")
-    # cumulative integral of the slopes gives log f up to a constant
-    logf = np.concatenate([[0.0], np.cumsum(s[:-1] * np.diff(c))])
+    # cumulative integral of the slopes gives log f up to a constant.
+    # TRAPEZOID, not left-Riemann: the left rule's error is LINEAR in c
+    # for a quadratic log density, and if float rounding drops one
+    # boundary center from the window the selection turns asymmetric and
+    # that linear error aliases directly into the fitted curvature
+    # (measured: sigma 0.348 instead of 0.400 on an exact Gaussian at
+    # dx = sigma/10). The trapezoid rule is exact for quadratic log f.
+    logf = np.concatenate([[0.0], np.cumsum(0.5 * (s[1:] + s[:-1])
+                                            * np.diff(c))])
     y = -logf[sel]
     x = c[sel] - mode
     # least squares on [x^2, 1]; the linear term vanishes at the mode

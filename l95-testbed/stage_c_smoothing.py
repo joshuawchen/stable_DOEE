@@ -763,9 +763,26 @@ def run_windows(a):
                     # else keep the previous window's density: a
                     # non-finite feedback must never reach the sampler
                 else:
-                    st["nll"], st["dnll"] = spec_nll(
-                        spec, 12.0 * max(sd, a.assumed_error))
-                    st["h"] = 0.5 * spec["grid spacing"]
+                    if a.feedback_smooth > 0:
+                        # the sampling/weighting copy is the smoothed
+                        # raw estimate in export mode too: the modes
+                        # then differ ONLY in the analysis density, and
+                        # the roughness-weights spiral cannot re-enter
+                        # through the export's verbatim interior slopes
+                        fineg = np.arange(-8.0, 8.0001, 0.02)
+                        pf = np.interp(fineg, xg, pi, left=0.0,
+                                       right=0.0)
+                        samp_c = raw_nll_from_estimate(
+                            fineg, smooth_pdf(pf, 0.02,
+                                              a.feedback_smooth))
+                        tst = np.arange(-6.0, 6.0001, 0.05)
+                        if all(np.all(np.isfinite(samp_c[j](tst)))
+                               for j in (0, 1)):
+                            st["nll"], st["dnll"], st["h"] = samp_c
+                    else:
+                        st["nll"], st["dnll"] = spec_nll(
+                            spec, 12.0 * max(sd, a.assumed_error))
+                        st["h"] = 0.5 * spec["grid spacing"]
         for k_ in hist:
             hist[k_].append(row[k_])
         print(f"    w {w:3d} N {n * (w + 1):5d}  "
