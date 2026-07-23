@@ -230,6 +230,19 @@ def raw_nll_from_estimate(xg, pi):
     return nll, dnll, 0.5 * dx
 
 
+def smooth_pdf(pf, dx, sig):
+    """Gaussian-kernel smoothing of a gridded density: the SAMPLING copy
+    of the fed-back estimate. Fine-scale roughness the adaptive
+    estimator is licensed to keep is exactly where 1/pi weights are most
+    sensitive, so the loop samples and weights under a smoothed copy
+    while the analysis MAP consumes the full estimate."""
+    if sig <= 0:
+        return pf
+    m = int(np.ceil(4.0 * sig / dx))
+    k = np.exp(-0.5 * (np.arange(-m, m + 1) * dx / sig) ** 2)
+    return np.convolve(pf, k / k.sum(), mode="same")
+
+
 def export_gap(spec, xg, pi, sd, assumed):
     """L1 between the raw recovered density and the density the export
     actually delivers to the analysis (exp of the integrated spec score,
@@ -570,6 +583,7 @@ def run_windows(a):
           f"{a.sampler}, feedback {a.feedback}"
           f"{f' relax {a.relax:g}' if a.relax != 1.0 else ''}"
           f"{f' loo-defense {a.loo_defense:g}' if a.loo_defense > 0 else ''}"
+          f"{f' fb-smooth {a.feedback_smooth:g}' if a.feedback_smooth > 0 else ''}"
           f" (regret in nats/ob vs each window's true MAP)")
     g_nll0, g_dnll0 = analytic_nll({"kind": "gaussian",
                                     "sigma": a.assumed_error})
@@ -719,11 +733,14 @@ def run_windows(a):
                         pf = a.relax * pf + (1.0 - a.relax) * st["pf"]
                     st["pf"] = pf
                     raw_c = raw_nll_from_estimate(fineg, pf)
+                    samp_c = (raw_nll_from_estimate(
+                        fineg, smooth_pdf(pf, 0.02, a.feedback_smooth))
+                        if a.feedback_smooth > 0 else raw_c)
                     tst = np.arange(-6.0, 6.0001, 0.05)
-                    if (np.all(np.isfinite(raw_c[0](tst)))
-                            and np.all(np.isfinite(raw_c[1](tst)))):
+                    if all(np.all(np.isfinite(c[j](tst)))
+                           for c in (raw_c, samp_c) for j in (0, 1)):
                         st["raw"] = raw_c
-                        st["nll"], st["dnll"], st["h"] = raw_c
+                        st["nll"], st["dnll"], st["h"] = samp_c
                     # else keep the previous window's density: a
                     # non-finite feedback must never reach the sampler
                 else:
@@ -920,6 +937,13 @@ def main():
                          "(1-delta) pi-hat + delta N(0, (3 s)^2), "
                          "bounding 1/pi and protecting the ESS; 0 "
                          "reproduces every pinned table exactly")
+    ap.add_argument("--feedback-smooth", type=float, default=0.0,
+                    help="Gaussian bandwidth (innovation units) for the "
+                         "SAMPLING copy of the raw fed-back density; the "
+                         "analysis MAP keeps the full estimate. "
+                         "Decouples ESS stability (needs smoothness) "
+                         "from estimation accuracy (needs adaptivity); "
+                         "0 = sample under the full estimate")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
