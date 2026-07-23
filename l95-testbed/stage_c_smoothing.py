@@ -596,21 +596,38 @@ def run_windows(a):
     hist = {k: [] for k in ("gaussM", "gaussB", "gauss", "shape")}
     ys = []
 
-    def sample_post(y_v, st, rk):
+    def sample_post(y_v, st, rk, check=False):
         Xf_v = Cs @ rk.standard_normal((NGRID, a.kref))
         if a.sampler == "pff":
             Zv, _ = analyze_pff(Xf_v, y_v, Heff, C, st["nll"],
                                 st["dnll"], st["h"], a.kref, rk,
                                 prior=(zeros, C))
             m_ = Zv.mean(axis=1, keepdims=True)
-            return m_ + a.pff_inflation * (Zv - m_)
+            Zv = m_ + a.pff_inflation * (Zv - m_)
+            if check:
+                # w0 samples under the assumed Gaussian, whose posterior
+                # is analytic: the ten-second flow-health readout
+                A0 = Cinv + (Heff.T @ Heff) / a.assumed_error ** 2
+                mean0 = np.linalg.solve(
+                    A0, Heff.T @ y_v / a.assumed_error ** 2)
+                sd0 = np.sqrt(np.diag(np.linalg.inv(A0)))
+                sdr = float(np.mean(np.std(Zv, axis=1, ddof=1) / sd0))
+                dev = float(np.sqrt(np.mean(
+                    (Zv.mean(axis=1) - mean0) ** 2)))
+                ok = 0.90 <= sdr <= 1.08
+                print(f"    pff w0 calibration vs analytic posterior: "
+                      f"sd ratio {sdr:.2f} mean dev {dev:.3f} "
+                      + ("(ok)" if ok else
+                         "TUNE: kref, then --pff-inflation, then "
+                         "bandwidth"))
+            return Zv
         Zv, _ = analyze_exact(Xf_v, y_v, Heff, C, st["nll"],
                               st["dnll"], st["h"], a.kref, rk,
                               prior=(zeros, C))
         return Zv
 
-    def loo_row(y_v, st, rk):
-        Zv = sample_post(y_v, st, rk)
+    def loo_row(y_v, st, rk, check=False):
+        Zv = sample_post(y_v, st, rk, check)
         h_v, ess_v = loo_hofx(y_v, Heff @ Zv, st["nll"], a.members,
                               np.random.default_rng(rk.integers(2 ** 31)),
                               a.loo_defense)
@@ -699,7 +716,9 @@ def run_windows(a):
                         ess_w = ess_v
             else:
                 rk = np.random.default_rng(a.seed + 7 + 1000 * w + off)
-                y_u, h_v, ess_w = loo_row(y, st, rk)
+                y_u, h_v, ess_w = loo_row(y, st, rk,
+                                          check=(w == 0 and off == 0
+                                                 and a.sampler == "pff"))
                 st["obs"].append(y_u)
                 st["hofx"].append(h_v)
                 if a.archive_mode == "recent":
