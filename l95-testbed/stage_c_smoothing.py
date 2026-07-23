@@ -166,6 +166,27 @@ def l1_between(a_pair, b_pair):
     return float(np.abs(ps[0] - ps[1]).sum() * 0.02)
 
 
+def export_gap(spec, xg, pi, sd, assumed):
+    """L1 between the raw recovered density and the density the export
+    actually delivers to the analysis (exp of the integrated spec score,
+    normalized). The pipeline's L1 column scores the raw estimate, but
+    the MAP consumes the export -- unimodality enforcement and the tail
+    retraction were built on symmetric cases, and this measures what
+    they do to an asymmetric one."""
+    if spec is None:
+        return float("nan")
+    half = 12.0 * max(sd, assumed)
+    nll_e, _ = spec_nll(spec, half)
+    fine = np.arange(-half, half + 1e-9, 0.02)
+    q = np.exp(-np.asarray(nll_e(fine)))
+    tq = q.sum() * 0.02
+    q = q / tq if tq > 0 else q
+    p = np.interp(fine, xg, pi, left=0.0, right=0.0)
+    tp = p.sum() * 0.02
+    p = p / tp if tp > 0 else p
+    return float(np.abs(p - q).sum() * 0.02)
+
+
 def density_to_spec(y, hofx, a, seed):
     """DOEE through the export the DA consumes; None if the gates refuse."""
     with warnings.catch_warnings():
@@ -478,12 +499,36 @@ def run_windows(a):
                        "spec": None, "sd": a.assumed_error,
                        "obs": [], "hofx": []}}
     hist = {k: [] for k in ("gaussM", "gaussB", "gauss", "shape")}
+    ys = []
+
+    def sample_post(y_v, st, rk):
+        Xf_v = Cs @ rk.standard_normal((NGRID, a.kref))
+        if a.sampler == "pff":
+            Zv, _ = analyze_pff(Xf_v, y_v, Heff, C, st["nll"],
+                                st["dnll"], st["h"], a.kref, rk,
+                                prior=(zeros, C))
+            m_ = Zv.mean(axis=1, keepdims=True)
+            return m_ + a.pff_inflation * (Zv - m_)
+        Zv, _ = analyze_exact(Xf_v, y_v, Heff, C, st["nll"],
+                              st["dnll"], st["h"], a.kref, rk,
+                              prior=(zeros, C))
+        return Zv
+
+    def loo_row(y_v, st, rk):
+        Zv = sample_post(y_v, st, rk)
+        h_v, ess_v = loo_hofx(y_v, Heff @ Zv, st["nll"], a.members,
+                              np.random.default_rng(rk.integers(2 ** 31)))
+        if a.center_innovations:
+            y_v = y_v - float(np.mean(y_v[:, None] - h_v))
+        return y_v, h_v, ess_v
+
     for w in range(a.windows):
         rng = np.random.default_rng(a.seed + 100 * w)
         z0 = Cs @ rng.standard_normal(NGRID)
         eps, spec_inj = draw_errors(a.density, rng, n, a.scale)
         spec_inj["sample_sigma"] = sample_sigma_of(spec_inj)
         y = Heff @ z0 + eps
+        ys.append(y.copy())
         nll_t, dnll_t = analytic_nll(spec_inj)
         starts_ref = [zeros, z0] + [Cs @ rng.standard_normal(NGRID)
                                     for _ in range(2)]
@@ -532,29 +577,41 @@ def run_windows(a):
                     Cinv, Heff, zeros, y, nll_e, dnll_e, starts_h,
                     h=0.5 * st["spec"]["grid spacing"])
             row[name] = reg(x_w)
-            # posterior + LOO under the SAME prequential density
-            Xf = Cs @ rng.standard_normal((NGRID, a.kref))
-            rk = np.random.default_rng(a.seed + 7 + 1000 * w
-                                       + (0 if name == "gauss" else 1))
-            if a.sampler == "pff":
-                Zp, _ = analyze_pff(Xf, y, Heff, C, st["nll"],
-                                    st["dnll"], st["h"], a.kref, rk,
-                                    prior=(zeros, C))
-                m_ = Zp.mean(axis=1, keepdims=True)
-                Zp = m_ + a.pff_inflation * (Zp - m_)
+            # build the estimation archive per --archive-mode: pooled
+            # keeps every window's rows as generated (online EM, infinite
+            # memory of stale E-steps -- measured to run away on skewed);
+            # regen REGENERATES every window's LOO rows under the CURRENT
+            # density (batch EM, self-consistent archive); recent keeps a
+            # sliding memory so stale imprints age out
+            off = 0 if name == "gauss" else 1
+            if a.archive_mode == "regen":
+                obs_l, hof_l = [], []
+                ess_w = float("nan")
+                for v in range(w + 1):
+                    rk = np.random.default_rng(
+                        a.seed + 11 + 1000 * v + 100000 * w + off)
+                    y_u, h_v, ess_v = loo_row(ys[v], st, rk)
+                    obs_l.append(y_u)
+                    hof_l.append(h_v)
+                    if v == w:
+                        ess_w = ess_v
             else:
-                Zp, _ = analyze_exact(Xf, y, Heff, C, st["nll"],
-                                      st["dnll"], st["h"], a.kref, rk,
-                                      prior=(zeros, C))
-            hofx_loo, ess_w = loo_hofx(
-                y, Heff @ Zp, st["nll"], a.members,
-                np.random.default_rng(a.seed + 17 + 1000 * w))
-            st["obs"].append(y.copy())
-            st["hofx"].append(hofx_loo)
+                rk = np.random.default_rng(a.seed + 7 + 1000 * w + off)
+                y_u, h_v, ess_w = loo_row(y, st, rk)
+                st["obs"].append(y_u)
+                st["hofx"].append(h_v)
+                if a.archive_mode == "recent":
+                    obs_l = st["obs"][-a.archive_windows:]
+                    hof_l = st["hofx"][-a.archive_windows:]
+                else:
+                    obs_l, hof_l = st["obs"], st["hofx"]
             spec, sd, (xg, pi) = density_to_spec(
-                np.concatenate(st["obs"]), np.vstack(st["hofx"]),
-                a, a.seed + 2)
+                np.concatenate(obs_l), np.vstack(hof_l), a, a.seed + 2)
             l1s[name] = l1_to_truth(xg, pi, spec_inj)
+            l1s[name + "_exp"] = export_gap(spec, xg, pi,
+                                            sd if spec is not None
+                                            else st["sd"],
+                                            a.assumed_error)
             if spec is not None:
                 st["spec"], st["sd"] = spec, sd
                 if name == "gauss":
@@ -572,6 +629,8 @@ def run_windows(a):
               f"gaussI {row['gauss']:.4f} loo {row['shape']:.4f}  "
               f"L1 gaussI {l1s.get('gauss', float('nan')):.2f} "
               f"loo {l1s.get('shape', float('nan')):.2f}  "
+              f"exp {l1s.get('gauss_exp', float('nan')):.2f}/"
+              f"{l1s.get('shape_exp', float('nan')):.2f}  "
               f"ESS {ess_w:.0f}")
     half_w = a.windows // 2
     print(f"  trailing {a.windows - half_w} windows, mean regret: "
@@ -586,15 +645,15 @@ def run_windows(a):
         print(f"  trailing paired margin (prequential Gaussian - loo): "
               f"{np.mean(d):+.4f} nats/ob CI [{lo:+.4f}, {hi:+.4f}] "
               f"({int((d > 0).sum())}/{d.size} windows loo wins)")
-    run = np.cumsum(np.array(hist["gauss"])
-                    - np.array(hist["shape"]))
-    cross = next((w for w in range(a.windows)
-                  if run[w] > 0 and all(
-                      run[v] > run[v - 1] for v in
-                      range(max(w, 1), min(w + 3, a.windows)))), None)
-    if cross is not None:
-        print(f"  cumulative margin turns and stays positive from "
-              f"window {cross}: the crossover the archive buys")
+    d_all = np.array(hist["gauss"]) - np.array(hist["shape"])
+    suff = [float(np.mean(d_all[v:])) for v in range(a.windows)]
+    stable = next((v for v in range(a.windows)
+                   if all(s > 0 for s in suff[v:])), None)
+    if stable is not None and stable <= a.windows - 3:
+        print(f"  crossover: the margin stays positive in the mean from "
+              f"window {stable} onward")
+    else:
+        print("  no stable crossover in this run")
     return 0
 
 
@@ -710,10 +769,24 @@ def main():
     ap.add_argument("--assumed-error", type=float, default=0.4)
     ap.add_argument("--windows", type=int, default=0,
                     help="prequential multi-window mode: this many "
-                         "re-anchored windows share one pooled LOO "
-                         "archive; window w is analyzed under the "
-                         "density from windows 1..w-1 (uses the first "
-                         "entry of --T-list)")
+                         "re-anchored windows share one LOO archive; "
+                         "window w is analyzed under the density from "
+                         "windows 1..w-1 (uses the first entry of "
+                         "--T-list)")
+    ap.add_argument("--archive-mode", default="pooled",
+                    choices=["pooled", "regen", "recent"],
+                    help="pooled = rows kept as generated (online EM, "
+                         "runs away on soft-direction densities); regen "
+                         "= regenerate all rows under the current "
+                         "density each window (batch EM, O(W^2) "
+                         "sampling); recent = sliding memory")
+    ap.add_argument("--archive-windows", type=int, default=5,
+                    help="memory length for --archive-mode recent")
+    ap.add_argument("--center-innovations", action="store_true",
+                    help="remove each window's mean innovation before "
+                         "archiving (VarBC-style pinning of the offset "
+                         "direction; location is only weakly identified "
+                         "by DOEE anyway)")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
