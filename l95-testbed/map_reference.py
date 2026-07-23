@@ -119,6 +119,17 @@ def draw_errors(kind, rng, n, scale=1.0):
         pick = rng.random(n) < w
         e = np.where(pick, rng.normal(0, s1, n), rng.normal(0, s2, n))
         return e, {"kind": "mixture", "w": w, "sigma1": s1, "sigma2": s2}
+    if kind == "skewed":
+        # full support, smooth, Gaussian tails, zero MEAN by construction
+        # (0.8(-0.1) + 0.2(0.4) = 0), sd ~ 0.361 scale, skewness ~ 0.97:
+        # the matched Gaussian matches kappa_1 and kappa_2 exactly, so
+        # any margin against it is kappa_3-and-above -- pure shape
+        w, m1, s1 = 0.8, -0.1 * scale, 0.25 * scale
+        m2, s2 = 0.4 * scale, 0.45 * scale
+        pick = rng.random(n) < w
+        e = np.where(pick, rng.normal(m1, s1, n), rng.normal(m2, s2, n))
+        return e, {"kind": "skewmix", "w": w, "m1": m1, "s1": s1,
+                   "m2": m2, "s2": s2}
     if kind == "laplace":
         b = 0.3 * scale
         return rng.laplace(0.0, b, n), {"kind": "laplace", "b": b}
@@ -138,6 +149,11 @@ def sample_sigma_of(spec):
     if k == "mixture":
         return float(np.sqrt(spec["w"] * spec["sigma1"] ** 2
                              + (1 - spec["w"]) * spec["sigma2"] ** 2))
+    if k == "skewmix":
+        w = spec["w"]
+        return float(np.sqrt(
+            w * (spec["s1"] ** 2 + spec["m1"] ** 2)
+            + (1 - w) * (spec["s2"] ** 2 + spec["m2"] ** 2)))
     if k == "laplace":
         return float(np.sqrt(2.0) * spec["b"])
     if k == "mirrored_gamma":
@@ -181,6 +197,29 @@ def analytic_nll(spec):
             fp = -e * (p1 / s1 ** 2 + p2 / s2 ** 2)
             return -fp / f
         return nll, dnll
+    if k == "skewmix":
+        w, m1, s1 = spec["w"], spec["m1"], spec["s1"]
+        m2, s2 = spec["m2"], spec["s2"]
+
+        def parts(e):
+            e = np.asarray(e, float)
+            p1 = w * np.exp(-0.5 * ((e - m1) / s1) ** 2) \
+                / (s1 * np.sqrt(2 * np.pi))
+            p2 = (1 - w) * np.exp(-0.5 * ((e - m2) / s2) ** 2) \
+                / (s2 * np.sqrt(2 * np.pi))
+            return p1, p2
+
+        def nll(e):
+            p1, p2 = parts(e)
+            return -np.log(np.maximum(p1 + p2, 1e-300))
+
+        def dnll(e):
+            e = np.asarray(e, float)
+            p1, p2 = parts(e)
+            f = np.maximum(p1 + p2, 1e-300)
+            return (p1 * (e - m1) / s1 ** 2
+                    + p2 * (e - m2) / s2 ** 2) / f
+        return nll, dnll
     if k == "laplace":
         b = spec["b"]
         d2 = (1e-3 * b) ** 2
@@ -219,6 +258,21 @@ def analytic_nll(spec):
             return dldt / c            # dnll/de = -dl/dt * dt/de, dt/de=-1/c
         return nll, dnll
     raise ValueError(k)
+
+
+def analytic_density_ext(spec, x):
+    """analytic_density extended with the skewmix kind (full-support
+    noncentered Gaussian mixture); delegates every other kind to the
+    Stage A implementation."""
+    if spec["kind"] == "skewmix":
+        x = np.asarray(x, float)
+        w, m1, s1 = spec["w"], spec["m1"], spec["s1"]
+        m2, s2 = spec["m2"], spec["s2"]
+        return (w * np.exp(-0.5 * ((x - m1) / s1) ** 2)
+                / (s1 * np.sqrt(2 * np.pi))
+                + (1 - w) * np.exp(-0.5 * ((x - m2) / s2) ** 2)
+                / (s2 * np.sqrt(2 * np.pi)))
+    return analytic_density(spec, x)
 
 
 def spec_nll(fmt_spec, half_width, semantics="score"):
@@ -360,7 +414,7 @@ def save_map_plot(path, xg, pi, spec_inj, est_spec, dtru, sig_true, eps):
     s = spec_inj["sample_sigma"]
     fine = np.linspace(-6 * s, 6 * s, 1201)
     dxf = fine[1] - fine[0]
-    tru = analytic_density(spec_inj, fine)
+    tru = analytic_density_ext(spec_inj, fine)
     p = np.interp(fine, xg, pi, left=0.0, right=0.0)
     tot = p.sum() * dxf
     if tot > 0:
@@ -423,7 +477,7 @@ def replicate(a, seed, quiet, plot_path=None):
                                      a.adaptive)
     sd, ku = moments_on(xg, pi)
     fine = np.arange(-10.0, 10.0001, 0.02)
-    tru = analytic_density(spec_inj, fine)
+    tru = analytic_density_ext(spec_inj, fine)
     p_i = np.interp(fine, xg, pi, left=0.0, right=0.0)
     tot = p_i.sum() * 0.02
     l1 = float(np.abs(p_i / tot - tru).sum() * 0.02) if tot > 0 else np.nan
@@ -443,11 +497,13 @@ def replicate(a, seed, quiet, plot_path=None):
         arms["estimated"] = (*spec_nll(est_spec, half, sem),
                              0.5 * est_spec["grid spacing"])
 
-    tf_spec, _ = DY.to_spec(oracle_cache(spec_inj))
-    tf_bad = DY.check(tf_spec)
-    if not tf_bad and not a.no_true_fmt:
-        arms["true-fmt"] = (*spec_nll(tf_spec, half, sem),
-                            0.5 * tf_spec["grid spacing"])
+    tf_spec = None
+    if spec_inj["kind"] != "skewmix":
+        tf_spec, _ = DY.to_spec(oracle_cache(spec_inj))
+        tf_bad = DY.check(tf_spec)
+        if not tf_bad and not a.no_true_fmt:
+            arms["true-fmt"] = (*spec_nll(tf_spec, half, sem),
+                                0.5 * tf_spec["grid spacing"])
 
     # sigma at the mode: the exported value against the true density's
     # (analytic curvature at zero; for laplace the cusp makes this the
@@ -664,7 +720,7 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--density", default="heavy",
-                    choices=["gaussian", "heavy", "laplace",
+                    choices=["gaussian", "heavy", "skewed", "laplace",
                              "mirrored_gamma"])
     ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=7)

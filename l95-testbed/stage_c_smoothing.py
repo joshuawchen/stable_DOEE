@@ -45,10 +45,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
-from map_reference import (NGRID, Quiet, analytic_nll, draw_errors,  # noqa: E402
-                           estimate_density, interp_operator, moments_on,
-                           multistart_map, prior_cov, sample_sigma_of,
-                           spec_nll)
+from map_reference import (NGRID, Quiet, analytic_density_ext,  # noqa: E402
+                           analytic_nll, draw_errors, estimate_density,
+                           interp_operator, moments_on, multistart_map,
+                           prior_cov, sample_sigma_of, spec_nll)
 from jedi_export import doee_to_yaml as DY  # noqa: E402
 from stage_a_end_to_end import analytic_density, gaussian_tails  # noqa: E402
 from stage_b_cycle import analyze_exact  # noqa: E402
@@ -68,7 +68,7 @@ def build_heff(m_per_time, T, a):
 
 def l1_to_truth(xg, pi, spec_inj):
     fine = np.arange(-10.0, 10.0001, 0.02)
-    tru = analytic_density(spec_inj, fine)
+    tru = analytic_density_ext(spec_inj, fine)
     p = np.interp(fine, xg, pi, left=0.0, right=0.0)
     tot = p.sum() * 0.02
     return float(np.abs(p / tot - tru).sum() * 0.02) if tot > 0 else np.nan
@@ -217,10 +217,21 @@ def pipeline_window(a, T, seed, quiet=False):
 
     jt = j_true(xt)
     out = {"n": n}
+    wall = (spec_inj["kind"] == "mirrored_gamma")
+    wall_edge = (2.0 * spec_inj["rescaled_to_sigma"] / (2.0 * np.sqrt(2.0))
+                 if wall else None)
 
     def score(tag, x):
         out[f"rmse_{tag}"] = float(np.sqrt(np.mean((x - xt) ** 2)))
         out[f"regret_{tag}"] = (j_true(x) - jt) / n
+        if wall:
+            # fraction of residuals past the hard support edge:
+            # probability-zero events under the true density, so regret
+            # is formally infinite there and its printed magnitude is an
+            # artifact of the log-density continuation; rmse and this
+            # fraction are the meaningful scores for wall densities
+            out[f"viol_{tag}"] = float(np.mean((y - Heff @ x)
+                                               > wall_edge))
 
     # Gaussian ladder, closed form
     HtH = Heff.T @ Heff
@@ -348,10 +359,13 @@ def pipeline_window(a, T, seed, quiet=False):
             score("loo", x_s)
 
     if not quiet:
-        bits = [f"    T {T:3d} n {n:5d}"]
+        key = "rmse" if wall else "regret"
+        bits = [f"    T {T:3d} n {n:5d} [{key}]"]
         for tag in ("gaussM", "gaussB", "prior", "gaussI", "loo"):
-            if f"regret_{tag}" in out:
-                bits.append(f"{tag} {out[f'regret_{tag}']:.4f}")
+            if f"{key}_{tag}" in out:
+                bits.append(f"{tag} {out[f'{key}_{tag}']:.4f}"
+                            + (f"({100 * out[f'viol_{tag}']:.0f}%)"
+                               if wall and f"viol_{tag}" in out else ""))
         bits.append(f"L1 prior {out.get('l1_prior', float('nan')):.2f} "
                     f"gaussI {out.get('l1_gaussI', float('nan')):.2f} "
                     f"loo {out.get('l1_loo', float('nan')):.2f}")
@@ -387,23 +401,34 @@ def run_pipeline(a):
     for T in Ts:
         rows = [pipeline_window(a, T, a.seed + 100 * r)
                 for r in range(a.replicates)]
-        line = f"  T {T:3d} mean regret:"
+        wall = (a.density == "mirrored_gamma")
+        key = "rmse" if wall else "regret"
+        line = f"  T {T:3d} mean {key}:"
         for tag in ("gaussM", "gaussB", "prior", "gaussI", "loo"):
-            v = [o[f"regret_{tag}"] for o in rows if f"regret_{tag}" in o]
+            v = [o[f"{key}_{tag}"] for o in rows if f"{key}_{tag}" in o]
             if v:
                 line += f"  {tag} {np.mean(v):.4f}"
+                if wall:
+                    w = [o[f"viol_{tag}"] for o in rows
+                         if f"viol_{tag}" in o]
+                    line += f"({100 * np.mean(w):.0f}%)"
         print(line)
+        if wall:
+            print("        wall density: regret is formally infinite for "
+                  "any wall-violating analysis, so scores are rmse to "
+                  "the true MAP with the wall-violation fraction in "
+                  "parentheses")
         for base, name in (("gaussI", "iterated Gaussian"),
                            ("gaussB", "oracle Gaussian")):
-            v_b = [o[f"regret_{base}"] for o in rows
-                   if f"regret_{base}" in o and "regret_loo" in o]
-            v_l = [o["regret_loo"] for o in rows
-                   if f"regret_{base}" in o and "regret_loo" in o]
+            v_b = [o[f"{key}_{base}"] for o in rows
+                   if f"{key}_{base}" in o and f"{key}_loo" in o]
+            v_l = [o[f"{key}_loo"] for o in rows
+                   if f"{key}_{base}" in o and f"{key}_loo" in o]
             if v_l:
                 d = np.array(v_b) - np.array(v_l)
                 lo, hi = _ci(d)
-                print(f"        paired margin ({name} - loo): "
-                      f"{np.mean(d):+.4f} nats/ob CI [{lo:+.4f}, "
+                print(f"        paired margin ({name} - loo, {key}): "
+                      f"{np.mean(d):+.4f} CI [{lo:+.4f}, "
                       f"{hi:+.4f}] "
                       f"({int((d > 0).sum())}/{len(d)} windows loo wins)")
     return 0
@@ -481,7 +506,7 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--density", default="heavy",
-                    choices=["gaussian", "heavy", "laplace",
+                    choices=["gaussian", "heavy", "skewed", "laplace",
                              "mirrored_gamma"])
     ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=7)
