@@ -444,6 +444,160 @@ def run_pipeline(a):
     return 0
 
 
+def run_windows(a):
+    """The operational mode: W independent re-anchored windows sharing
+    one pooled LOO archive, run PREQUENTIALLY -- window w is analyzed and
+    posterior-sampled under the density estimated from windows 1..w-1
+    only, then contributes its innovations. H1 therefore holds EXACTLY
+    (no empirical-Bayes reuse at all), the across-window loop replaces
+    the within-window iteration, and its kicks shrink with the archive,
+    so the fixed-point map self-damps. The economics this measures: the
+    Gaussian's total regret per window is a CONSTANT (its shape tax),
+    while the shape pipeline's falls like 1/W -- the crossover window is
+    the operational promise."""
+    T = int(a.T_list.split(",")[0])
+    rng0 = np.random.default_rng(a.seed)
+    C = prior_cov(a.sigma_b, a.length_scale)
+    Cs = np.linalg.cholesky(C)
+    Cinv = np.linalg.inv(C)
+    Heff = build_heff(a.m_per_time, T, a.persistence)
+    n = Heff.shape[0]
+    zeros = np.zeros(NGRID)
+    print(f"stage C prequential windows: density {a.density} scale "
+          f"{a.scale}, {a.windows} windows x (T {T} x m {a.m_per_time} "
+          f"= {n} obs), members {a.members}, kref {a.kref}, assumed "
+          f"{a.assumed_error}, "
+          f"{'adaptive' if a.adaptive else f'lam {a.lam:g}'}, sampler "
+          f"{a.sampler} (regret in nats/ob vs each window's true MAP)")
+    g_nll0, g_dnll0 = analytic_nll({"kind": "gaussian",
+                                    "sigma": a.assumed_error})
+    pipes = {"gauss": {"nll": g_nll0, "dnll": g_dnll0, "h": 1e-5,
+                       "spec": None, "sd": a.assumed_error,
+                       "obs": [], "hofx": []},
+             "shape": {"nll": g_nll0, "dnll": g_dnll0, "h": 1e-5,
+                       "spec": None, "sd": a.assumed_error,
+                       "obs": [], "hofx": []}}
+    hist = {k: [] for k in ("gaussM", "gaussB", "gauss", "shape")}
+    for w in range(a.windows):
+        rng = np.random.default_rng(a.seed + 100 * w)
+        z0 = Cs @ rng.standard_normal(NGRID)
+        eps, spec_inj = draw_errors(a.density, rng, n, a.scale)
+        spec_inj["sample_sigma"] = sample_sigma_of(spec_inj)
+        y = Heff @ z0 + eps
+        nll_t, dnll_t = analytic_nll(spec_inj)
+        starts_ref = [zeros, z0] + [Cs @ rng.standard_normal(NGRID)
+                                    for _ in range(2)]
+        xt, _, _, _ = multistart_map(Cinv, Heff, zeros, y, nll_t,
+                                     dnll_t, starts_ref)
+
+        def j_true(x):
+            return 0.5 * x @ Cinv @ x \
+                + float(np.sum(nll_t(y - Heff @ x)))
+
+        jt = j_true(xt)
+        HtH = Heff.T @ Heff
+        Hty = Heff.T @ y
+
+        def gauss_map(sig):
+            return np.linalg.solve(Cinv + HtH / sig ** 2,
+                                   Hty / sig ** 2)
+
+        sm = spec_inj["sample_sigma"]
+        row = {}
+
+        def reg(x):
+            return (j_true(x) - jt) / n
+
+        row["gaussM"] = reg(gauss_map(sm))
+        sgrid = np.geomspace(0.3 * sm, 3.0 * sm, 40)
+        k_ = int(np.argmin([j_true(gauss_map(float(s)))
+                            for s in sgrid]))
+        fine_s = np.linspace(sgrid[max(k_ - 1, 0)],
+                             sgrid[min(k_ + 1, sgrid.size - 1)], 25)
+        sB = float(fine_s[int(np.argmin([j_true(gauss_map(float(s)))
+                                         for s in fine_s]))])
+        row["gaussB"] = reg(gauss_map(sB))
+
+        starts_h = [zeros, gauss_map(a.assumed_error)] \
+            + [Cs @ rng.standard_normal(NGRID) for _ in range(2)]
+        l1s, ess_w = {}, float("nan")
+        for name, st in pipes.items():
+            # ANALYZE window w under the density from windows 1..w-1
+            if name == "gauss" or st["spec"] is None:
+                x_w = gauss_map(st["sd"])
+            else:
+                half = 12.0 * max(st["sd"], a.assumed_error)
+                nll_e, dnll_e = spec_nll(st["spec"], half)
+                x_w, _, _, _ = multistart_map(
+                    Cinv, Heff, zeros, y, nll_e, dnll_e, starts_h,
+                    h=0.5 * st["spec"]["grid spacing"])
+            row[name] = reg(x_w)
+            # posterior + LOO under the SAME prequential density
+            Xf = Cs @ rng.standard_normal((NGRID, a.kref))
+            rk = np.random.default_rng(a.seed + 7 + 1000 * w
+                                       + (0 if name == "gauss" else 1))
+            if a.sampler == "pff":
+                Zp, _ = analyze_pff(Xf, y, Heff, C, st["nll"],
+                                    st["dnll"], st["h"], a.kref, rk,
+                                    prior=(zeros, C))
+                m_ = Zp.mean(axis=1, keepdims=True)
+                Zp = m_ + a.pff_inflation * (Zp - m_)
+            else:
+                Zp, _ = analyze_exact(Xf, y, Heff, C, st["nll"],
+                                      st["dnll"], st["h"], a.kref, rk,
+                                      prior=(zeros, C))
+            hofx_loo, ess_w = loo_hofx(
+                y, Heff @ Zp, st["nll"], a.members,
+                np.random.default_rng(a.seed + 17 + 1000 * w))
+            st["obs"].append(y.copy())
+            st["hofx"].append(hofx_loo)
+            spec, sd, (xg, pi) = density_to_spec(
+                np.concatenate(st["obs"]), np.vstack(st["hofx"]),
+                a, a.seed + 2)
+            l1s[name] = l1_to_truth(xg, pi, spec_inj)
+            if spec is not None:
+                st["spec"], st["sd"] = spec, sd
+                if name == "gauss":
+                    st["nll"], st["dnll"] = analytic_nll(
+                        {"kind": "gaussian", "sigma": sd})
+                    st["h"] = 1e-5
+                else:
+                    st["nll"], st["dnll"] = spec_nll(
+                        spec, 12.0 * max(sd, a.assumed_error))
+                    st["h"] = 0.5 * spec["grid spacing"]
+        for k_ in hist:
+            hist[k_].append(row[k_])
+        print(f"    w {w:3d} N {n * (w + 1):5d}  "
+              f"gaussM {row['gaussM']:.4f} gaussB {row['gaussB']:.4f} "
+              f"gaussI {row['gauss']:.4f} loo {row['shape']:.4f}  "
+              f"L1 gaussI {l1s.get('gauss', float('nan')):.2f} "
+              f"loo {l1s.get('shape', float('nan')):.2f}  "
+              f"ESS {ess_w:.0f}")
+    half_w = a.windows // 2
+    print(f"  trailing {a.windows - half_w} windows, mean regret: "
+          + "  ".join(f"{tag} {np.mean(hist[k][half_w:]):.4f}"
+                      for tag, k in (("gaussM", "gaussM"),
+                                     ("gaussB", "gaussB"),
+                                     ("gaussI", "gauss"),
+                                     ("loo", "shape"))))
+    d = np.array(hist["gauss"][half_w:]) - np.array(hist["shape"][half_w:])
+    if d.size >= 3:
+        lo, hi = _ci(d)
+        print(f"  trailing paired margin (prequential Gaussian - loo): "
+              f"{np.mean(d):+.4f} nats/ob CI [{lo:+.4f}, {hi:+.4f}] "
+              f"({int((d > 0).sum())}/{d.size} windows loo wins)")
+    run = np.cumsum(np.array(hist["gauss"])
+                    - np.array(hist["shape"]))
+    cross = next((w for w in range(a.windows)
+                  if run[w] > 0 and all(
+                      run[v] > run[v - 1] for v in
+                      range(max(w, 1), min(w + 3, a.windows)))), None)
+    if cross is not None:
+        print(f"  cumulative margin turns and stays positive from "
+              f"window {cross}: the crossover the archive buys")
+    return 0
+
+
 def selftest():
     class A0:
         density, scale = "gaussian", 1.0
@@ -554,12 +708,20 @@ def main():
                          "the analytic iteration-0 Gaussian posterior")
     ap.add_argument("--pff-inflation", type=float, default=1.05)
     ap.add_argument("--assumed-error", type=float, default=0.4)
+    ap.add_argument("--windows", type=int, default=0,
+                    help="prequential multi-window mode: this many "
+                         "re-anchored windows share one pooled LOO "
+                         "archive; window w is analyzed under the "
+                         "density from windows 1..w-1 (uses the first "
+                         "entry of --T-list)")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
         return selftest()
     if a.adaptive:
         a.lam = None
+    if a.windows:
+        return run_windows(a)
     if a.pipeline:
         return run_pipeline(a)
 
