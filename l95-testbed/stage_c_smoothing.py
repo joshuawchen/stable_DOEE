@@ -51,7 +51,7 @@ from map_reference import (NGRID, Quiet, analytic_density_ext,  # noqa: E402
                            prior_cov, sample_sigma_of, spec_nll)
 from jedi_export import doee_to_yaml as DY  # noqa: E402
 from stage_a_end_to_end import analytic_density, gaussian_tails  # noqa: E402
-from stage_b_cycle import analyze_exact  # noqa: E402
+from stage_b_cycle import analyze_exact, analyze_pff  # noqa: E402
 
 
 def build_heff(m_per_time, T, a):
@@ -320,6 +320,7 @@ def pipeline_window(a, T, seed, quiet=False):
         cur_h, prev, spec_f, sd_f = 1e-5, None, None, a.assumed_error
         ess = delta = float("nan")
         it_used = 0
+        hist = []
         for it in range(a.max_iters):
             Zp = sample_posterior(cur_nll, cur_dnll, cur_h, sub, it)
             hofx_loo, ess = loo_hofx(
@@ -331,6 +332,7 @@ def pipeline_window(a, T, seed, quiet=False):
             it_used = it + 1
             delta = l1_between(prev, (xg, pi))
             prev, spec_f, sd_f = (xg, pi), spec, sd
+            hist.append((delta, spec, sd, (xg, pi)))
             if mode == "gauss":
                 cur_nll, cur_dnll = analytic_nll(
                     {"kind": "gaussian", "sigma": sd})
@@ -341,6 +343,14 @@ def pipeline_window(a, T, seed, quiet=False):
                 cur_h = 0.5 * spec["grid spacing"]
             if delta < a.iter_tol:
                 break
+        # damped selection, truth-free: if the loop did not settle, ship
+        # the MOST SELF-CONSISTENT iterate (minimum successive L1) rather
+        # than the last one -- an unconverged fixed-point map can
+        # oscillate, and the last iterate of an oscillation is arbitrary
+        if len(hist) >= 2:
+            d_, s_, sd_, e_ = min(hist[1:], key=lambda h: h[0])
+            if d_ < delta:
+                spec_f, sd_f, prev = s_, sd_, e_
         return spec_f, sd_f, prev, it_used, ess, delta
 
     spec_g, sd_g, est_g, it_g, ess_g, dl_g = iterate("gauss", 1)
