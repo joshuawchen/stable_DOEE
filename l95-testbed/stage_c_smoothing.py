@@ -506,8 +506,7 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--density", default="heavy",
-                    choices=["gaussian", "heavy", "skewed", "laplace",
-                             "mirrored_gamma"])
+                    choices=["gaussian", "heavy", "skewed", "laplace"])
     ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--replicates", type=int, default=4)

@@ -68,7 +68,8 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
 from jedi_export import doee_to_yaml as DY          # noqa: E402
-from map_reference import (NGRID, Quiet, analytic_nll, draw_errors,  # noqa: E402
+from map_reference import (NGRID, Quiet, analytic_density_ext,  # noqa: E402
+                           analytic_nll, draw_errors,
                            estimate_density, interp_operator, moments_on,
                            prior_cov, sample_sigma_of, solve_map, spec_nll)
 from stage_a_end_to_end import analytic_density, gaussian_tails  # noqa: E402
@@ -258,7 +259,7 @@ def reestimate(obs_arch, hofx_arch, lam, adaptive, assumed_error, seed):
 
 def density_metrics(xg, pi, spec, spec_inj, dtru, sig_true, eps_pool):
     fine = np.arange(-10.0, 10.0001, 0.02)
-    tru = analytic_density(spec_inj, fine)
+    tru = analytic_density_ext(spec_inj, fine)
     p = np.interp(fine, xg, pi, left=0.0, right=0.0)
     tot = p.sum() * 0.02
     l1 = float(np.abs(p / tot - tru).sum() * 0.02) if tot > 0 else np.nan
@@ -539,8 +540,7 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--density", default="heavy",
-                    choices=["gaussian", "heavy", "laplace",
-                             "mirrored_gamma"])
+                    choices=["gaussian", "heavy", "skewed", "laplace"])
     ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--cycles", type=int, default=10)
