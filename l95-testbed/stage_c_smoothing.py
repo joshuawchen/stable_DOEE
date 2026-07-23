@@ -166,6 +166,41 @@ def l1_between(a_pair, b_pair):
     return float(np.abs(ps[0] - ps[1]).sum() * 0.02)
 
 
+def raw_nll_from_estimate(xg, pi):
+    """(nll, dnll, h) directly from the raw recovered density:
+    interpolated log-density over its support, linear log-tail
+    continuation with decay enforced, score by differentiation. Bypasses
+    the export entirely -- the diagnostic feedback path for deciding
+    whether the export projection is the loop's unstable element."""
+    xg = np.asarray(xg, float)
+    p = np.maximum(np.asarray(pi, float), 0.0)
+    tot = np.trapz(p, xg)
+    if tot > 0:
+        p = p / tot
+    idx = np.nonzero(p > p.max() * 1e-6)[0]
+    xs = xg[idx[0]:idx[-1] + 1]
+    ls = np.log(p[idx[0]:idx[-1] + 1])
+    dx = xs[1] - xs[0]
+    slL = max((ls[1] - ls[0]) / dx, 1e-6)
+    slR = min((ls[-1] - ls[-2]) / dx, -1e-6)
+    dlg = np.gradient(ls, xs)
+
+    def nll(e):
+        e = np.asarray(e, float)
+        out = -np.interp(e, xs, ls)
+        out = np.where(e < xs[0], -(ls[0] + slL * (e - xs[0])), out)
+        out = np.where(e > xs[-1], -(ls[-1] + slR * (e - xs[-1])), out)
+        return out
+
+    def dnll(e):
+        e = np.asarray(e, float)
+        out = -np.interp(e, xs, dlg)
+        out = np.where(e < xs[0], -slL, out)
+        out = np.where(e > xs[-1], -slR, out)
+        return out
+    return nll, dnll, 0.5 * dx
+
+
 def export_gap(spec, xg, pi, sd, assumed):
     """L1 between the raw recovered density and the density the export
     actually delivers to the analysis (exp of the integrated spec score,
@@ -568,8 +603,14 @@ def run_windows(a):
         l1s, ess_w = {}, float("nan")
         for name, st in pipes.items():
             # ANALYZE window w under the density from windows 1..w-1
-            if name == "gauss" or st["spec"] is None:
+            if name == "gauss" or (st["spec"] is None
+                                   and st.get("raw") is None):
                 x_w = gauss_map(st["sd"])
+            elif a.feedback == "raw" and st.get("raw") is not None:
+                nll_e, dnll_e, h_e = st["raw"]
+                x_w, _, _, _ = multistart_map(
+                    Cinv, Heff, zeros, y, nll_e, dnll_e, starts_h,
+                    h=h_e)
             else:
                 half = 12.0 * max(st["sd"], a.assumed_error)
                 nll_e, dnll_e = spec_nll(st["spec"], half)
@@ -618,6 +659,14 @@ def run_windows(a):
                     st["nll"], st["dnll"] = analytic_nll(
                         {"kind": "gaussian", "sigma": sd})
                     st["h"] = 1e-5
+                elif a.feedback == "raw":
+                    fineg = np.arange(-8.0, 8.0001, 0.02)
+                    pf = np.interp(fineg, xg, pi, left=0.0, right=0.0)
+                    if a.relax < 1.0 and st.get("pf") is not None:
+                        pf = a.relax * pf + (1.0 - a.relax) * st["pf"]
+                    st["pf"] = pf
+                    st["raw"] = raw_nll_from_estimate(fineg, pf)
+                    st["nll"], st["dnll"], st["h"] = st["raw"]
                 else:
                     st["nll"], st["dnll"] = spec_nll(
                         spec, 12.0 * max(sd, a.assumed_error))
@@ -787,6 +836,15 @@ def main():
                          "archiving (VarBC-style pinning of the offset "
                          "direction; location is only weakly identified "
                          "by DOEE anyway)")
+    ap.add_argument("--feedback", default="export",
+                    choices=["export", "raw"],
+                    help="what the shape loop feeds back: the Format A "
+                         "export (operational path) or the raw recovered "
+                         "density (diagnostic: convicts or clears the "
+                         "export projection as the unstable element)")
+    ap.add_argument("--relax", type=float, default=1.0,
+                    help="damped density update in raw feedback: new = "
+                         "relax*estimate + (1-relax)*previous")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
