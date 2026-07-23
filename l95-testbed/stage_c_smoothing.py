@@ -84,8 +84,13 @@ def loo_hofx(y, hofx_post, nll, K, rng):
     """Per-observation importance resampling of the full smoothing
     ensemble into approximate leave-one-out members: the LOO posterior
     differs from the full one by exactly the factor 1/pi(r_i), so
-    w_k proportional to exp(nll(r_i^k)), softmax-normalized. Returns the
-    (n, K) member matrix and the mean effective sample size."""
+    w_k proportional to exp(nll(r_i^k)), softmax-normalized -- with
+    Ionides-style truncation at mean(w) sqrt(Kref), because for densities
+    that vanish at a support wall 1/pi(r) is UNBOUNDED and a few
+    wall-violating members otherwise absorb all the weight (the known
+    IS-LOO failure mode; PSIS or exact per-observation refits are the
+    principled upgrades). Returns the (n, K) member matrix and the mean
+    effective sample size AFTER truncation."""
     n, Kref = hofx_post.shape
     out = np.empty((n, K))
     ess = np.empty(n)
@@ -93,6 +98,7 @@ def loo_hofx(y, hofx_post, nll, K, rng):
         lw = np.asarray(nll(y[i] - hofx_post[i]), float)
         lw -= lw.max()
         w = np.exp(lw)
+        w = np.minimum(w, w.mean() * np.sqrt(Kref))
         w /= w.sum()
         ess[i] = 1.0 / np.sum(w * w)
         idx = rng.choice(Kref, size=K, replace=True, p=w)

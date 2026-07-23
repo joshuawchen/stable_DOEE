@@ -169,6 +169,19 @@ Calibration is not bought at any rung: the LOO posterior is computable
 only under pi-hat, so the fixed-point structure of section 5 applies
 unchanged. LOO minimizes the kernel GIVEN calibration.
 
+CAVEAT (measured on mirrored_gamma): the importance weights 1/pi(r) are
+UNBOUNDED whenever the density can vanish at an observed residual --
+support walls are the worst case -- and then a few wall-violating
+members absorb all the weight (ESS collapsed to ~3/400 and the resampled
+kernel degenerated). The finite-variance condition is E[1/pi(r)] finite
+under the full posterior; this is exactly the known IS-LOO failure mode
+of the Bayesian cross-validation literature. Implemented remedy:
+Ionides-style weight truncation at mean(w) sqrt(Kref) (slightly biased,
+stable); principled upgrades are Pareto-smoothed importance sampling,
+leave-slice-out, or exact per-observation refits for flagged
+observations. Steep-tailed and compact-support noise densities should be
+run with the truncated weights and the reported ESS watched.
+
 Smoothing-view consequence: in a strong-constraint 4D window the
 trajectory has d degrees of freedom against n observations, so corrected
 residuals differ from the true errors by O(DFS/n) and the estimation

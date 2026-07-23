@@ -117,23 +117,42 @@ def analyze_exact(Xf, y, H, C, nll, dnll, hh, K, rng, burn=150,
     Pinv = np.linalg.inv(P)
     xmap, _, _ = solve_map(Pinv, H, mu, y, nll, dnll, mu, h=hh)
     logp, grad = posterior_pieces(Pinv, mu, H, y, nll, dnll)
+    lp_map = logp(xmap)
     e = y - H @ xmap
     c = np.clip((dnll(e + hh) - dnll(e - hh)) / (2 * hh), 0.0, None)
     A = Pinv + (H.T * c) @ H + 1e-10 * np.eye(Xf.shape[0])
     L = np.linalg.cholesky(A)
+    d_ = Xf.shape[0]
+
+    def drift_of(g_):
+        # capped preconditioned drift, applied identically in the forward
+        # and backward proposal means so the MH ratio stays exact; the cap
+        # tames support-wall gradients (mirrored_gamma's continuation has
+        # curvature 1/t0^2) that otherwise launch proposals into the void
+        dr = 0.5 * tau * tau * np.linalg.solve(A, g_)
+        an = float(np.sqrt(max(dr @ A @ dr, 0.0)))
+        cap = 3.0 * tau * np.sqrt(d_)
+        return dr * (cap / an) if an > cap else dr
+
     tau, acc_tot, n_tot = 0.4, 0, 0
-    Xa = np.empty((Xf.shape[0], K))
+    Xa = np.empty((d_, K))
     for k in range(K):
         x = Xf[:, k].copy()
         lp, g = logp(x), grad(x)
+        if not np.isfinite(lp) or lp < lp_map - 50.0 * d_:
+            # a start beyond a support wall (or absurdly deep in a tail)
+            # never accepts; restart at the MAP with preconditioned jitter
+            x = xmap + 0.5 * np.linalg.solve(
+                L.T, rng.standard_normal(d_))
+            lp, g = logp(x), grad(x)
         acc_c, acc_win = 0, 0
         nb = 2 * burn if k == 0 else burn
         for it in range(nb):
-            m_x = x + 0.5 * tau * tau * np.linalg.solve(A, g)
+            m_x = x + drift_of(g)
             xp = m_x + tau * np.linalg.solve(
-                L.T, rng.standard_normal(x.size))
+                L.T, rng.standard_normal(d_))
             lpp, gp = logp(xp), grad(xp)
-            m_xp = xp + 0.5 * tau * tau * np.linalg.solve(A, gp)
+            m_xp = xp + drift_of(gp)
             dq_f = xp - m_x
             dq_b = x - m_xp
             a_log = lpp - lp \
