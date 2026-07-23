@@ -203,7 +203,12 @@ def raw_nll_from_estimate(xg, pi):
         p = p / tot
     idx = np.nonzero(p > p.max() * 1e-6)[0]
     xs = xg[idx[0]:idx[-1] + 1]
-    ls = np.log(p[idx[0]:idx[-1] + 1])
+    # the adaptive estimator's NNLS positivity licenses EXACT ZEROS in
+    # the interior of the span; floor them at the same 1e-6 cut that
+    # defines the span, or log produces -inf and the fed-back score
+    # poisons the sampler (nan matmuls, singular Laplace solves)
+    ps = np.maximum(p[idx[0]:idx[-1] + 1], p.max() * 1e-6)
+    ls = np.log(ps)
     dx = xs[1] - xs[0]
     slL = max((ls[1] - ls[0]) / dx, 1e-6)
     slR = min((ls[-1] - ls[-2]) / dx, -1e-6)
@@ -713,8 +718,14 @@ def run_windows(a):
                     if a.relax < 1.0 and st.get("pf") is not None:
                         pf = a.relax * pf + (1.0 - a.relax) * st["pf"]
                     st["pf"] = pf
-                    st["raw"] = raw_nll_from_estimate(fineg, pf)
-                    st["nll"], st["dnll"], st["h"] = st["raw"]
+                    raw_c = raw_nll_from_estimate(fineg, pf)
+                    tst = np.arange(-6.0, 6.0001, 0.05)
+                    if (np.all(np.isfinite(raw_c[0](tst)))
+                            and np.all(np.isfinite(raw_c[1](tst)))):
+                        st["raw"] = raw_c
+                        st["nll"], st["dnll"], st["h"] = raw_c
+                    # else keep the previous window's density: a
+                    # non-finite feedback must never reach the sampler
                 else:
                     st["nll"], st["dnll"] = spec_nll(
                         spec, 12.0 * max(sd, a.assumed_error))
