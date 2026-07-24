@@ -286,6 +286,84 @@ def density_to_spec(y, hofx, a, seed):
     return spec, sd, (xg, pi)
 
 
+def pff_kwargs(a):
+    """Tuning knobs that mirror JEDI PFF.h configuration: the YAML
+    'standard_deviation' bandwidth (h^2 = SD^2 / Np, the paper's B/Np)
+    and the pseudo-time iteration count. Defaults reproduce every pinned
+    table exactly (median-heuristic bandwidth, 300 iterations)."""
+    kw = {}
+    if a.pff_bandwidth > 0:
+        kw["h2_fixed"] = a.pff_bandwidth ** 2 / a.kref
+    if a.pff_iters != 300:
+        kw["iters"] = a.pff_iters
+    return kw
+
+
+def run_pff_fidelity(a):
+    """Sampler fidelity in isolation: one window, posterior sampled
+    under the TRUE analytic density (no estimation, no loop), MALA as
+    the exactness reference, PFF at a small grid of the JEDI-tunable
+    knobs (bandwidth SD, iterations; kref and inflation from the CLI).
+    The decisive columns are the skewness of the pooled innovations and
+    the sd ratio: an sd-ratio-only health check is structurally blind to
+    odd-moment attenuation, which is how a skew bias can survive
+    Gaussian-referenced certification."""
+    T = int(str(a.T_list).split(",")[0])
+    seed = a.seed
+    rng = np.random.default_rng(seed)
+    C = prior_cov(a.sigma_b, a.length_scale)
+    Cs = np.linalg.cholesky(C)
+    zeros = np.zeros(NGRID)
+    Heff = build_heff(a.m_per_time, T, a.persistence)
+    n = Heff.shape[0]
+    z0 = Cs @ rng.standard_normal(NGRID)
+    eps, spec_inj = draw_errors(a.density, rng, n, a.scale)
+    y = Heff @ z0 + eps
+    nll, dnll = analytic_nll(spec_inj)
+    Xf = Cs @ rng.standard_normal((NGRID, a.kref))
+
+    def row(Z):
+        r = (y[:, None] - Heff @ Z).ravel()
+        m = float(r.mean())
+        s = float(r.std(ddof=1))
+        return m, s, float(np.mean(((r - m) / s) ** 3))
+
+    print(f"pff fidelity: density {a.density}, T {T}, n {n}, kref "
+          f"{a.kref}, infl {a.pff_inflation:g}, one window, posterior "
+          f"under the TRUE density (pooled innovation moments; mala is "
+          f"the exact reference; sd in the JEDI bandwidth rows is the "
+          f"YAML standard_deviation, h^2 = sd^2/kref)")
+    em, es = float(eps.mean()), float(eps.std(ddof=1))
+    print(f"  {'drawn errors':30s} mean {em:+.4f} sd {es:.4f} skew "
+          f"{float(np.mean(((eps - em) / es) ** 3)):+.3f}")
+
+    Zm, _ = analyze_exact(Xf, y, Heff, C, nll, dnll, 1e-5, a.kref,
+                          np.random.default_rng(seed + 13),
+                          prior=(zeros, C))
+    mm, sm_, km = row(Zm)
+    print(f"  {'mala (reference)':30s} mean {mm:+.4f} sd {sm_:.4f} "
+          f"skew {km:+.3f}")
+
+    def pff_variant(tag, **kw):
+        Z, _ = analyze_pff(Xf, y, Heff, C, nll, dnll, 1e-5, a.kref,
+                           np.random.default_rng(seed + 13),
+                           prior=(zeros, C), **kw)
+        c_ = Z.mean(axis=1, keepdims=True)
+        Z = c_ + a.pff_inflation * (Z - c_)
+        m_, s_, k_ = row(Z)
+        print(f"  {tag:30s} mean {m_:+.4f} sd {s_:.4f} skew {k_:+.3f}"
+              f"  [vs mala: sd x{s_ / sm_:.3f} dskew {k_ - km:+.3f}]")
+
+    pff_variant("pff median-bw, iters 300")
+    for sd_ in (0.5 * a.sigma_b, a.sigma_b, 2.0 * a.sigma_b):
+        pff_variant(f"pff jedi-bw sd {sd_:g}, iters 300",
+                    h2_fixed=sd_ ** 2 / a.kref)
+    pff_variant(f"pff jedi-bw sd {a.sigma_b:g}, iters 1200",
+                h2_fixed=a.sigma_b ** 2 / a.kref, iters=1200)
+    pff_variant("pff median-bw, iters 1200", iters=1200)
+    return 0
+
+
 def pipeline_window(a, T, seed, quiet=False):
     """End-to-end: every arm produces a density, the density produces a
     4D MAP, and the MAP is scored against the true-density MAP. Arms:
@@ -398,7 +476,8 @@ def pipeline_window(a, T, seed, quiet=False):
         rk = np.random.default_rng(seed + 13 + 1000 * sub + it)
         if a.sampler == "pff":
             Zp, _ = analyze_pff(Xf, y, Heff, C, cur_nll, cur_dnll,
-                                cur_h, a.kref, rk, prior=(zeros, C))
+                                cur_h, a.kref, rk, prior=(zeros, C),
+                                **pff_kwargs(a))
             m_ = Zp.mean(axis=1, keepdims=True)
             Zp = m_ + a.pff_inflation * (Zp - m_)
             if sub == 1 and it == 0:
@@ -602,7 +681,7 @@ def run_windows(a):
         if a.sampler == "pff":
             Zv, _ = analyze_pff(Xf_v, y_v, Heff, C, st["nll"],
                                 st["dnll"], st["h"], a.kref, rk,
-                                prior=(zeros, C))
+                                prior=(zeros, C), **pff_kwargs(a))
             m_ = Zv.mean(axis=1, keepdims=True)
             Zv = m_ + a.pff_inflation * (Zv - m_)
             if check:
@@ -939,6 +1018,18 @@ def main():
                          "inflation, health-checked every window against "
                          "the analytic iteration-0 Gaussian posterior")
     ap.add_argument("--pff-inflation", type=float, default=1.05)
+    ap.add_argument("--pff-bandwidth", type=float, default=0.0,
+                    help="JEDI bandwidth convention: h^2 = this^2/kref "
+                         "per component (the PFF.h YAML "
+                         "'standard_deviation' knob, paper's B/Np); "
+                         "0 = median heuristic (pinned-table default)")
+    ap.add_argument("--pff-iters", type=int, default=300,
+                    help="pseudo-time iteration cap for the flow")
+    ap.add_argument("--pff-fidelity", action="store_true",
+                    help="single-window sampler-fidelity diagnostic "
+                         "under the TRUE analytic density: MALA "
+                         "reference vs PFF over a bandwidth/iteration "
+                         "tuning grid; pooled-innovation mean/sd/skew")
     ap.add_argument("--assumed-error", type=float, default=0.4)
     ap.add_argument("--windows", type=int, default=0,
                     help="prequential multi-window mode: this many "
@@ -985,6 +1076,8 @@ def main():
     a = ap.parse_args()
     if a.selftest:
         return selftest()
+    if a.pff_fidelity:
+        return run_pff_fidelity(a)
     if a.adaptive:
         a.lam = None
     if a.windows:

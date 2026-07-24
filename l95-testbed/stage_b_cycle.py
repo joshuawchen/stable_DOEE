@@ -177,7 +177,7 @@ def analyze_exact(Xf, y, H, C, nll, dnll, hh, K, rng, burn=150,
 
 
 def analyze_pff(Xf, y, H, C, nll, dnll, hh, K, rng, iters=300, step0=0.3,
-                prior=None, kernel="component"):
+                prior=None, kernel="component", h2_fixed=None):
     """The interacting particle flow, SVGD form, particle positions live
     in the kernel. kernel="component" is the dimension-wise kernel of Hu
     & van Leeuwen (2021) and of oops PFF.h (Schur products): each state
@@ -185,7 +185,10 @@ def analyze_pff(Xf, y, H, C, nll, dnll, hh, K, rng, iters=300, step0=0.3,
     collapse a scalar RBF kernel suffers when K is comparable to the
     dimension. kernel="scalar" keeps vanilla SVGD for comparison.
     AdaGrad stepping (the SVGD default), stable as the bandwidth shrinks
-    with K; a fixed step is not."""
+    with K; a fixed step is not. h2_fixed mirrors the JEDI PFF.h
+    bandwidth convention h^2 = standard_deviation^2 / Np (the YAML
+    'standard_deviation' knob, the paper's B/Np); None keeps the median
+    heuristic and reproduces every pinned table exactly."""
     mu, P = prior if prior is not None else fit_prior(Xf, C)
     Pinv = np.linalg.inv(P)
     _, grad = posterior_pieces(Pinv, mu, H, y, nll, dnll)
@@ -201,7 +204,8 @@ def analyze_pff(Xf, y, H, C, nll, dnll, hh, K, rng, iters=300, step0=0.3,
             n2 = np.sum(X * X, axis=0)
             D2 = np.maximum(n2[:, None] + n2[None, :]
                             - 2.0 * (X.T @ X), 0.0)
-            h2 = max(np.median(D2[iu]) / (2.0 * logN), 1e-8)
+            h2 = (h2_fixed if h2_fixed is not None
+                  else max(np.median(D2[iu]) / (2.0 * logN), 1e-8))
             Kn = np.exp(-D2 / (2.0 * h2))
             phi = (S @ Kn) / N \
                 + (X * Kn.sum(axis=0) - X @ Kn) / (h2 * N)
@@ -210,7 +214,8 @@ def analyze_pff(Xf, y, H, C, nll, dnll, hh, K, rng, iters=300, step0=0.3,
             for c in range(d):
                 dc = X[c][:, None] - X[c][None, :]
                 d2 = dc * dc
-                h2 = max(np.median(d2[iu]) / (2.0 * logN), 1e-10)
+                h2 = (h2_fixed if h2_fixed is not None
+                      else max(np.median(d2[iu]) / (2.0 * logN), 1e-10))
                 Kc = np.exp(-d2 / (2.0 * h2))
                 phi[c] = (S[c] @ Kc) / N \
                     + (X[c] * Kc.sum(axis=0) - X[c] @ Kc) / (h2 * N)
