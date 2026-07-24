@@ -17,8 +17,9 @@ PATCH="$HERE/pff_paper_conformance.patch"
 
 OOPS="${1:-}"
 if [ -z "$OOPS" ]; then
-  OOPS="$(find "$HOME" -maxdepth 6 -name PFF.h -path "*src/oops/assimilation*" \
-          2>/dev/null | head -1 | sed 's#/src/oops/assimilation/PFF.h##')"
+  OOPS="$(find "$HOME" -maxdepth 9 -name PFF.h \
+          -path "*src/oops/assimilation*" 2>/dev/null \
+          | head -1 | sed 's#/src/oops/assimilation/PFF.h##')"
 fi
 [ -n "$OOPS" ] && [ -d "$OOPS/.git" ] || {
   echo "oops checkout not found; pass it explicitly:"

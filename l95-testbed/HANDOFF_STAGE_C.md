@@ -56,8 +56,22 @@ refused (previous density kept).
    defects found and patched (repulsion sign, frozen particle
    geometry, learning-rate branch clobber); the sandbox mirror never
    had them, so all sandbox PFF results certify the PAPER algorithm
-   and transfer to JEDI only once the patch lands (branch
-   pff-paper-conformance via make_pff_branch.sh).
+   and transfer to JEDI only once the patch lands. DONE: branch
+   pff-paper-conformance on joshuawchen/oops, b6065682 (conformance
+   patch) + cfce66fa (reference regen; 'test output filename' kept in
+   the yaml for future regens), pushed; oops_l95_eda_3dvar_pff green,
+   133/133 l95 suite green with the patch. Acceptance read of the
+   conformant flow: norm 100 -> 15.2 over ten steps, decelerating to a
+   plateau, zero backtracks, eps steady at 0.05, inflation 1.00; Jo
+   1003 -> 261 with Jb settling at ~218. CAVEAT for the calibration
+   ctest: the PFF norm diagnostic sums updates over particles, and the
+   repulsion term is pairwise-ANTISYMMETRIC, so it cancels exactly in
+   that sum -- the norm is constitutionally blind to the sign bug the
+   patch fixed (old and new iteration-0 norms agree to 14 digits).
+   Member trajectories, pinned by the regenerated reference, carry the
+   correction; a spread-vs-closed-form-posterior ctest is the proper
+   correctness gate (Phase 0 list). Merge to nongaussian-costjo at
+   J's discretion.
 6. PREQUENTIAL CROSSOVER, skewed (MALA):
    - raw pooled: +0.0082 CI [+0.0046, +0.0115], 9/10, with a late-run
      wrinkle (stale rows, see 7).
