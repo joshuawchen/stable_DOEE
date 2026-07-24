@@ -321,12 +321,26 @@ def run_pff_fidelity(a):
     y = Heff @ z0 + eps
     nll, dnll = analytic_nll(spec_inj)
     Xf = Cs @ rng.standard_normal((NGRID, a.kref))
+    lam_ = None if a.adaptive else a.lam
 
     def row(Z):
         r = (y[:, None] - Heff @ Z).ravel()
         m = float(r.mean())
         s = float(r.std(ddof=1))
         return m, s, float(np.mean(((r - m) / s) ** 3))
+
+    def est_stage(Z, k):
+        """The loop's next stage on this variant's members: LOO
+        (weights under the TRUE density, isolating member statistics at
+        fixed weighting) then the estimator; L1 to truth and ESS are the
+        columns where a member-diversity defect would show even with
+        perfect marginals."""
+        h_loo, ess = loo_hofx(y, Heff @ Z, nll, a.members,
+                              np.random.default_rng(seed + 29 + k),
+                              a.loo_defense)
+        _, l1 = estimate_arm(y, h_loo, spec_inj, seed + 2, lam_,
+                             a.adaptive)
+        return l1, ess
 
     print(f"pff fidelity: density {a.density}, T {T}, n {n}, kref "
           f"{a.kref}, infl {a.pff_inflation:g}, one window, posterior "
@@ -341,26 +355,33 @@ def run_pff_fidelity(a):
                           np.random.default_rng(seed + 13),
                           prior=(zeros, C))
     mm, sm_, km = row(Zm)
+    l1m, essm = est_stage(Zm, 0)
     print(f"  {'mala (reference)':30s} mean {mm:+.4f} sd {sm_:.4f} "
-          f"skew {km:+.3f}")
+          f"skew {km:+.3f}  L1 {l1m:.3f} ESS {essm:.0f}")
 
-    def pff_variant(tag, **kw):
+    def pff_variant(tag, k, **kw):
         Z, _ = analyze_pff(Xf, y, Heff, C, nll, dnll, 1e-5, a.kref,
                            np.random.default_rng(seed + 13),
                            prior=(zeros, C), **kw)
         c_ = Z.mean(axis=1, keepdims=True)
         Z = c_ + a.pff_inflation * (Z - c_)
         m_, s_, k_ = row(Z)
+        l1_, ess_ = est_stage(Z, k)
         print(f"  {tag:30s} mean {m_:+.4f} sd {s_:.4f} skew {k_:+.3f}"
-              f"  [vs mala: sd x{s_ / sm_:.3f} dskew {k_ - km:+.3f}]")
+              f"  [vs mala: sd x{s_ / sm_:.3f} dskew {k_ - km:+.3f}]"
+              f"  L1 {l1_:.3f} ESS {ess_:.0f}")
 
-    pff_variant("pff median-bw, iters 300")
-    for sd_ in (0.5 * a.sigma_b, a.sigma_b, 2.0 * a.sigma_b):
-        pff_variant(f"pff jedi-bw sd {sd_:g}, iters 300",
+    pff_variant("pff median-bw, iters 300", 0)
+    for j, sd_ in enumerate((0.5 * a.sigma_b, a.sigma_b,
+                             2.0 * a.sigma_b)):
+        pff_variant(f"pff jedi-bw sd {sd_:g}, iters 300", 0,
                     h2_fixed=sd_ ** 2 / a.kref)
-    pff_variant(f"pff jedi-bw sd {a.sigma_b:g}, iters 1200",
+    pff_variant(f"pff jedi-bw sd {a.sigma_b:g}, iters 1200", 0,
                 h2_fixed=a.sigma_b ** 2 / a.kref, iters=1200)
-    pff_variant("pff median-bw, iters 1200", iters=1200)
+    pff_variant("pff median-bw, iters 1200", 0, iters=1200)
+    print("  (identical LOO seed per variant: L1/ESS differences "
+          "isolate member statistics, not weighting or estimator "
+          "randomness)")
     return 0
 
 
