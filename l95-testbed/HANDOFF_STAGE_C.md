@@ -110,7 +110,13 @@ refused (previous density kept).
    sigma/10). Fixed by trapezoid reconstruction + one-ulp window
    guard; sandbox pinned tables untouched (score semantics never reads
    sigma at mode); the C++ variance path consumed the wrong value
-   until now.
+   until now. C++ SIDE DONE: branch format-a-parity-ctest (0a12c229)
+   on joshuawchen/oops, oops_assimilation_formata_parity GREEN ON
+   FIRST RUN -- all 184 comparisons (4 densities x 23 points x
+   score+variance) at 1e-9, first compile, no adjustment on either
+   side: the mirror and the evaluator were in exact agreement, and
+   drift on either side now fails a ctest. Fixtures canonical in
+   stable_DOEE; regenerate there, copy via make_parity_branch.sh.
 10. MIRRORED_GAMMA retired (compact support out of design class);
     "skewed" replaces it.
 
@@ -152,7 +158,12 @@ B. ROUGHNESS-WEIGHTS SPIRAL: adaptive estimates are rough exactly
   with BOTH samplers at the replicated level, and the fidelity grid
   being flat means there is nothing to tune.
 - Export hardening (cliff -> slope on degraded skewed estimates) and
-  the C++ side of the parity ctest (Phase 0 completion).
+  the PFF calibration ctest (spread vs closed-form posterior, obs
+  perturbation amplitude 0 so all particles share one likelihood --
+  note the current eda_3dvar_pff yaml perturbs obs PER MEMBER, so the
+  coupled particles flow toward different posteriors, an EDA-flow
+  hybrid rather than the paper's PFF; design question flagged to J):
+  Phase 0's remainder now that the parity ctest is done (see 9).
 - Phase 1: 4D Gaussian-equivalence ctest on JEDI l95 (nongaussian-
   costjo fork), then non-Gaussian 4D reference.
 - Rung-1 influence-step LOO: the transport upgrade; the natural home
