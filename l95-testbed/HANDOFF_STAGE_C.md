@@ -8,138 +8,130 @@ N(0, C), T obs times x m locations), the LOO principle
 (NOTES_DOEE_DERIVATION.md section 5) made executable, and end-to-end
 pipelines scored by 4D MAP regret against the true-density MAP. Three
 modes: the ladder (--T-list, prior/residual/loo arms), the single-window
-pipeline (--pipeline: oracle Gaussians, prior baseline, two ITERATED
-pipelines sharing one posterior<->LOO<->estimate loop differing only in
-what they retain -- gaussI keeps variance, loo keeps shape), and the
-prequential multi-window mode (--windows: re-anchored windows, one
-archive, window w analyzed under the density from windows 1..w-1; H1
-exact).
+pipeline (--pipeline), and the prequential multi-window mode
+(--windows: re-anchored windows, one archive, window w analyzed under
+the density from windows 1..w-1; H1 exact; --archive-mode pooled or
+recent(5)).
 
-Loop-stability knobs added this session (all default-off; every pinned
-table reproduces exactly at defaults):
-- --loo-defense DELTA: LOO weights under the defensive mixture
-  (1-delta) pi-hat + delta N(0, (3 s)^2) (Hesterberg), pi-hat
-  normalized numerically; bounds 1/pi, protects the ESS.
-- --feedback-smooth SIG: the SAMPLING copy of the raw fed-back density
-  is Gaussian-smoothed at bandwidth SIG; the analysis MAP keeps the
-  full estimate. Decouples ESS stability (needs smoothness) from
-  estimation accuracy (needs adaptivity).
-- Hardening (always on, inert for healthy runs): export failures are
-  nonfatal everywhere (spec None; in raw feedback the export is
-  diagnostic-only and the loop proceeds); interior exact zeros in the
-  raw feedback are floored at the span's own 1e-6 cut before log; a
-  non-finite fed-back score is refused (previous density kept).
+RECOMMENDED CONFIGURATION (wins on both densities through the
+operational interface, MALA):
+--feedback export --adaptive --loo-defense 0.01 --feedback-smooth 0.1
+--archive-mode recent
 
-Working configuration for the headline prequential runs:
---feedback raw --adaptive --loo-defense 0.01 --feedback-smooth 0.1
+Loop-stability knobs (all default-off; pinned tables reproduce exactly
+at defaults): --loo-defense DELTA (defensive-mixture LOO weights,
+Hesterberg, pi-hat normalized numerically); --feedback-smooth SIG (the
+SAMPLING copy of the fed-back density is Gaussian-smoothed; the
+analysis keeps the full estimate -- in BOTH raw and export feedback, so
+the two modes differ only in the analysis density). Always-on
+hardening: export failures nonfatal everywhere; interior exact zeros in
+raw feedback floored at the span's 1e-6 cut; non-finite fed-back scores
+refused (previous density kept).
 
 ## Settled results (fixed seeds, reproducible)
 
-1. LADDER (heavy): loo < residual < prior in L1 at every n; naive
-   residuals shrink as predicted; convergence as d/n -> 0.
-2. SINGLE-WINDOW PIPELINE, heavy, T=10 (n=400), 16 reps: loo 0.0131 vs
-   oracle Gaussian 0.0459 / iterated Gaussian 0.0465 nats/ob; margin
-   +0.0334 CI [+0.0244, +0.0422], 15/16. T=3 positive not significant;
-   T=25 margin narrowed (the "plateau", RESOLVED below -- it was lam).
-3. SINGLE-WINDOW PIPELINE, skewed, 16 reps: loo loses (-0.027, -0.039)
-   because this density's Gaussian ceiling (0.016 at T=10, 0.007 at
-   T=25) sits below the single-window estimation floor. Superseded in
-   the archive regime by result 7 -- the static half of the decision
-   rule, not the final word.
-4. GAUSSIAN NULL (selftest-pinned): gaussM regret 7e-17; gaussI
-   converges to sd 0.389 in 2 iterations; loo insurance premium 0.033;
-   defended loo (delta 0.01) inert in the null (sd 0.356 vs 0.355,
-   ESS 350).
-5. PFF CERTIFIED END TO END: single-window pipeline, heavy T=10, 8 reps
-   under --sampler pff (kref 400, componentwise kernel, inflation
-   1.05): pff-sdr 1.04-1.05 every window (analytic iteration-0
-   calibration, band [0.90, 1.08], zero warnings); loo 0.0120, margins
-   +0.0320 CI [+0.0150, +0.0484] (vs gaussI) and +0.0314 (vs gaussB),
-   7/8 -- statistically on top of the MALA reference block. The
-   operational sampler (oops PFF.h analog) runs the entire honest
-   pipeline.
-6. PLATEAU RESOLVED -- IT WAS LAM: under fixed lam 3 the prequential
-   loo/gaussI L1 sat ~0.15 while N grew 400 -> 8000; under --adaptive
-   the gaussI column rides the archive down to L1 0.03 at N=8000. The
-   estimation floor falls with the archive when smoothing scales with
-   the data; the crossover economics stand.
-7. PREQUENTIAL CROSSOVER, BOTH DENSITIES (20 windows x n=400, working
-   configuration above, MALA):
-   - heavy: trailing-10 loo 0.0024 vs gaussM 0.0518 / gaussB 0.0506 /
-     gaussI 0.0518; margin +0.0494 CI [+0.0438, +0.0547], 10/10,
-     crossover from window 0. loo sits at 0.001-0.006 from w2 onward:
-     ~95% of the Gaussian ceiling captured, near-true-MAP analyses,
-     archive ~800 obs at crossover. gaussB ~ gaussM everywhere: oracle
-     variance tuning recovers nothing; the entire 0.05 is shape. THE
-     central figure.
-   - skewed: trailing-10 loo 0.0086 vs Gaussians 0.0165-0.0168; margin
-     +0.0082 CI [+0.0046, +0.0115], 9/10, crossover from window 0.
-     Even the near-parabolic boundary case crosses once the archive
-     pushes the floor under its small ceiling.
-   Decision rule, final dynamic form: the ceiling (score nonlinearity
-   over the data's range, computable from the estimate) decides WHETHER
-   shape can pay; the archive decides WHEN it starts paying.
-8. MIRRORED_GAMMA retired from experiment menus (compact support is
-   outside DOEE's design class); replaced by "skewed" (skewmix,
-   analytic, Gaussian tails). Wall lessons kept in the notes.
+1. LADDER (heavy): loo < residual < prior in L1 at every n.
+2. SINGLE-WINDOW PIPELINE, heavy T=10, 16 reps: loo 0.0131 vs oracle
+   Gaussian 0.0459; margin +0.0334 CI [+0.0244, +0.0422], 15/16.
+   Single-window skewed loses (ceiling below the floor) -- superseded
+   in the archive regime by result 6.
+3. GAUSSIAN NULL (selftest-pinned): gaussM 7e-17; gaussI converges in
+   2 iterations; loo premium 0.033; defended loo inert (sd 0.356 vs
+   0.355, ESS 350).
+4. PFF CERTIFIED, heavy, single-window AND prequential:
+   - single-window 8 reps: pff-sdr 1.04-1.05, margins +0.0320 (gaussI)
+     / +0.0314 (gaussB), 7/8, on top of the MALA block.
+   - prequential 20 windows (recommended config, raw): trailing loo
+     0.0018 vs ceiling 0.0518, margin +0.0501 CI [+0.0439, +0.0555],
+     10/10, crossover from w0, w0 analytic calibration silent. THE
+     CENTRAL FIGURE, on the operational sampler.
+5. PLATEAU RESOLVED -- IT WAS LAM: under --adaptive the estimation
+   floor falls with the archive (gaussI L1 0.15 -> 0.03 at N=8000).
+6. PREQUENTIAL CROSSOVER, skewed (MALA):
+   - raw pooled: +0.0082 CI [+0.0046, +0.0115], 9/10, with a late-run
+     wrinkle (stale rows, see 7).
+   - raw recent(5): +0.0145 CI [+0.0120, +0.0168], 10/10, trailing loo
+     0.0023, wrinkle gone.
+   Even the near-parabolic boundary case crosses from w0. Decision
+   rule, dynamic form: the ceiling decides WHETHER shape can pay; the
+   archive decides WHEN.
+7. ARCHIVE CURATION IS A DESIGN ELEMENT: recent(5) (2000 obs) BEATS
+   pooled (8000 obs) on skewed under MALA -- rows generated under
+   early wrong densities carry stale kernels that outweigh their data
+   value. Cheap approximation of the self-consistent (batch-EM/regen)
+   archive. CAVEAT: curation interacts with sampler fidelity (see open
+   item on PFF skew).
+8. EXPORT ACQUITTED AT THE RECOMMENDED CONFIGURATION: export feedback,
+   skewed, recent(5), MALA: +0.0147 CI [+0.0126, +0.0167], 10/10,
+   trailing loo 0.0021 -- IDENTICAL to raw's +0.0145. The full
+   operational chain (estimate -> Format A -> non-Gaussian analysis)
+   reproduces the raw loop on the hardest density. Pooled export run:
+   +0.0059, 8/10 (sag = the stale-row wrinkle, not the export). The
+   original export-feedback runaway is reattributed: the export
+   AMPLIFIES spiral-degraded estimates (its failure is a CLIFF: exp
+   pegs at 2.0 on estimates only ~0.13-0.15 from truth) but is
+   faithful (gap <= 0.05) on clean ones.
+9. INTERFACE PARITY LAYER: jedi_export/make_parity_fixtures.py +
+   parity_fixtures.json -- deterministic exported specs from the
+   ANALYTIC menu densities plus 23-point score/variance reference
+   tables per density covering every evaluator branch, floats at 12
+   significant digits (regeneration byte-stable across platforms;
+   --check verified green on the VM). JSON is valid YAML: the C++
+   ctest reads it with eckit::YAMLConfiguration and compares
+   oops::NonGaussianDensity at tol 1e-9. Building this caught and
+   fixed a real defect: sigma_at_mode was grid-fragile (left-Riemann
+   reconstruction error aliasing through a float-asymmetric fit
+   window; 0.348 instead of 0.400 on an exact Gaussian at dx =
+   sigma/10). Fixed by trapezoid reconstruction + one-ulp window
+   guard; sandbox pinned tables untouched (score semantics never reads
+   sigma at mode); the C++ variance path consumed the wrong value
+   until now.
+10. MIRRORED_GAMMA retired (compact support out of design class);
+    "skewed" replaces it.
 
-## The closed investigation: shape-loop instability, fully attributed
+## Instabilities: attributed and fixed
 
-Two distinct instabilities were isolated and fixed this session, each
-convicted by the gaussI control (identical LOO machinery, stable
-throughout):
-
-A. EXPORT PROJECTION under accumulating skew (prior session's suspect,
-   convicted): with --feedback export the skewed loop ran away (pooled
-   by w~7, regen faster); with --feedback raw both runs stayed bounded
-   for 20 windows while the exp column showed the export diverging
-   harmlessly (gaps to 2.0 late in the relax run). Relaxation (0.5) is
-   unnecessary and mildly harmful once the export is out of the loop
-   (adds memory; trailing margin -0.0047 vs -0.0010 raw-only).
-   => Engineering item: per-side junction/curvature in gaussian_tails.
-   Heavy's export gaps stay 0.01-0.07 all run: the defect is
-   skew-specific.
-
-B. ROUGHNESS-WEIGHTS SPIRAL, adaptive x loop (new this session): the
-   adaptive estimator is licensed to be rough exactly where 1/pi
-   weights are most sensitive. Rough fed-back density -> ESS collapse
-   (34-74) -> archive rows resampled from few effective members ->
-   duplication violates the adaptive noise model -> under-smoothing ->
-   rougher. Also two hard failures on the way: interior exact zeros
-   (NNLS positivity) -> log -inf -> nan scores -> singular Laplace
-   solve; and the export's find_mode throwing on a mangled estimate.
-   All fixed (see knobs/hardening above). With the working
-   configuration: ESS 318-374 across every window of both prequential
-   runs.
+A. EXPORT-AMPLIFIED SPIRAL (historical): export feedback diverged on
+   skewed under the UNSTABILIZED loop; with the loop stabilized the
+   export reproduces raw (result 8). Remaining export work is
+   HARDENING, not a blocker: per-side tail treatment so degraded
+   skewed estimates degrade the export gracefully instead of tripping
+   the cliff; plus the C++ parity ctest.
+B. ROUGHNESS-WEIGHTS SPIRAL: adaptive estimates are rough exactly
+   where 1/pi weights are most sensitive; rough density -> ESS
+   collapse -> duplicated archive rows -> adaptive under-smooths ->
+   rougher. Fixed by the smoothing decouple + defense + sanitation;
+   ESS 318-374 in every stabilized run. Two hard failures fixed on the
+   way: interior exact zeros -> log -inf -> nan scores; export
+   find_mode throwing on mangled estimates.
 
 ## Open / queued
 
-- Late-run skewed wrinkle: after w~13 the loo L1 drifts 0.05 -> 0.10
-  and regret ~0.002 -> ~0.011 (still winning 9/10). Absent on heavy.
-  Suspects: stale pooled rows generated under early wrong densities
-  (--archive-mode recent isolates this in one run), or loop noise
-  scale at this L1. Diagnostic, not blocking.
-- Export per-side tail fix (item A above): THE remaining engineering
-  step between the sandbox result and the operational path, since JEDI
-  consumes Format A while the working loop currently feeds back raw.
-  Closing test: repaired export back in the loop reproduces the raw
-  runs' stability and margins.
-- Prequential replication under --sampler pff: the certification
-  (result 5) is single-window; one run each of heavy/skewed prequential
-  under pff ties both headline figures to the operational sampler.
-- Rung-1 influence-step LOO (derivation note's ladder): the transport
-  upgrade to importance reweighting; less urgent now that defense +
-  smoothing hold the ESS, still the principled fix where reweighting
-  starves.
-- Consolidate the final figure set (crossover curves for both
-  densities) when the above close.
+- PFF SKEW SENSITIVITY (the one open science item): on skewed, PFF
+  pooled ties (-0.0002) and PFF recent LOSES (-0.0172 CI [-0.0270,
+  -0.0100], 0/10), while MALA wins both and PFF wins heavy outright.
+  Leading hypothesis: the flow carries a skew-conditional residual
+  bias (certified on Gaussian/symmetric references; odd moments cancel
+  on heavy); recent concentrates the biased fresh rows that pooled
+  dilutes. gaussI control clean on the same draws (second moments
+  fine). Decisive test queued: kref 800 (tuning-limited vs
+  structural). If structural: kernel work in the flow, or route skewed
+  densities to the transport-LOO rung.
+- Export hardening (cliff -> slope on degraded skewed estimates) and
+  the C++ side of the parity ctest (Phase 0 completion).
+- Phase 1: 4D Gaussian-equivalence ctest on JEDI l95 (nongaussian-
+  costjo fork), then non-Gaussian 4D reference.
+- Rung-1 influence-step LOO: the transport upgrade; the natural home
+  for skew if PFF's bias is structural.
+- Figure set: crossover curves (heavy PFF, skewed export) when the
+  above close.
 
-## Tooling notes for the next session
+## Tooling notes
 
-Repo: stable_DOEE, branch jedi-density-export; Mac checkout under
-~/Downloads/scas-paper/rrfs-ufo-update/stable_DOEE (bridge-writable);
-VM runs via git pull; commits/pushes from J's terminal (bridge has no
-git identity); python3 blocked on the Mac bridge, all execution on the
-VM (venv ~/jedi/venv: numpy quadprog matplotlib). numpy 2.x on the VM:
-np.trapz is gone (one past crash). Fixed seeds throughout: every table
-in this handoff reproduces exactly at default knob settings.
+Repo stable_DOEE, branch jedi-density-export; Mac checkout
+~/Downloads/scas-paper/rrfs-ufo-update/stable_DOEE (bridge-writable;
+python3 BLOCKED on the bridge -- execution on the VM or in the
+assistant sandbox); commits/pushes from J's terminal. VM venv
+~/jedi/venv (numpy 2.x: np.trapz is gone). Fixed seeds: every table
+here reproduces exactly at default knob settings; prequential headers
+now print sampler, feedback, archive mode, and all active knobs.
