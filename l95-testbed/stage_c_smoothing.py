@@ -977,6 +977,7 @@ def selftest():
         loo_defense = 0.0
         assumed_error, max_iters, iter_tol = 0.4, 3, 0.05
         sampler, pff_inflation = "mala", 1.05
+        pff_bandwidth, pff_iters = 0.0, 300
     p = P0()
     prow = pipeline_window(p, 5, 33, quiet=True)
     print(f"pipeline gaussian null (n {prow['n']}): regret gaussM "
@@ -993,6 +994,18 @@ def selftest():
         "iterated Gaussian did not converge near the true sigma"
     assert "regret_loo" in prow and prow["regret_loo"] < 0.08, \
         "shape pipeline far from the floor in the null"
+
+    p.sampler = "pff"
+    prow2 = pipeline_window(p, 5, 33, quiet=True)
+    print(f"pipeline gaussian null, pff sampler: sd ratio "
+          f"{prow2.get('pff_sdr', float('nan')):.2f} mean dev "
+          f"{prow2.get('pff_dev', float('nan')):.3f} gaussI regret "
+          f"{prow2.get('regret_gaussI', float('nan')):.4f}")
+    assert 0.90 <= prow2.get("pff_sdr", 0.0) <= 1.08, \
+        "pff miscalibrated against the analytic null posterior"
+    assert prow2.get("regret_gaussI", 1.0) < 5e-3, \
+        "pff-driven iterated Gaussian fails the null"
+    p.sampler = "mala"
     print("selftest passed")
     return 0
 
