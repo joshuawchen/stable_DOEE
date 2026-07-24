@@ -47,6 +47,17 @@ refused (previous density kept).
      CENTRAL FIGURE, on the operational sampler.
 5. PLATEAU RESOLVED -- IT WAS LAM: under --adaptive the estimation
    floor falls with the archive (gaussI L1 0.15 -> 0.03 at N=8000).
+5b. SAMPLER FIDELITY INSTRUMENT (--pff-fidelity): one window, true
+   analytic density, MALA reference vs PFF over a bandwidth/budget
+   grid, carried through LOO and the estimator (pooled-innovation
+   mean/sd/skew, then L1 and ESS at matched seeds). This is the check
+   an sd-ratio-only readout cannot do (odd-moment blindness). Also the
+   JEDI PFF.h audit (jedi_export/patches/): three implementation
+   defects found and patched (repulsion sign, frozen particle
+   geometry, learning-rate branch clobber); the sandbox mirror never
+   had them, so all sandbox PFF results certify the PAPER algorithm
+   and transfer to JEDI only once the patch lands (branch
+   pff-paper-conformance via make_pff_branch.sh).
 6. PREQUENTIAL CROSSOVER, skewed (MALA):
    - raw pooled: +0.0082 CI [+0.0046, +0.0115], 9/10, with a late-run
      wrinkle (stale rows, see 7).
@@ -107,16 +118,25 @@ B. ROUGHNESS-WEIGHTS SPIRAL: adaptive estimates are rough exactly
 
 ## Open / queued
 
-- PFF SKEW SENSITIVITY (the one open science item): on skewed, PFF
-  pooled ties (-0.0002) and PFF recent LOSES (-0.0172 CI [-0.0270,
-  -0.0100], 0/10), while MALA wins both and PFF wins heavy outright.
-  Leading hypothesis: the flow carries a skew-conditional residual
-  bias (certified on Gaussian/symmetric references; odd moments cancel
-  on heavy); recent concentrates the biased fresh rows that pooled
-  dilutes. gaussI control clean on the same draws (second moments
-  fine). Decisive test queued: kref 800 (tuning-limited vs
-  structural). If structural: kernel work in the flow, or route skewed
-  densities to the transport-LOO rung.
+- PFF SKEW SENSITIVITY: CLOSED, three-way. (i) Flow-bias hypothesis
+  refuted by the fidelity diagnostic: under the true skewed density,
+  PFF matches MALA's posterior marginals to dskew <= 0.014 and sd
+  ratio 1.000-1.004, FLAT across bandwidth (0.3-1.2) and budget
+  (300-1200) -- no tuning even needed. (ii) Member-statistics
+  hypothesis refuted by the estimation-stage columns: PFF ensembles
+  give L1 0.056-0.067 vs MALA's 0.071 at matched LOO seeds (ESS
+  361-363 vs 365) -- at least as good for the estimator. (iii) Seed
+  replication: at seed 11, PFF-recent WINS +0.0157 CI [+0.0141,
+  +0.0175] 10/10, slightly ahead of MALA's +0.0148 on the same
+  realization. The seed-7 PFF loss (-0.0172) was a LOOP-REALIZATION
+  EVENT, not a sampler property. Residual (low priority): the
+  boundary-density loop has a small per-realization excursion
+  probability (1 of 4 recent-archive skewed realizations),
+  sampler-agnostic as far as measured, visible in-flight via the
+  ESS/L1/exp columns; a seed ladder would estimate the rate.
+  Operationally: the recommended configuration wins on both densities
+  with BOTH samplers at the replicated level, and the fidelity grid
+  being flat means there is nothing to tune.
 - Export hardening (cliff -> slope on degraded skewed estimates) and
   the C++ side of the parity ctest (Phase 0 completion).
 - Phase 1: 4D Gaussian-equivalence ctest on JEDI l95 (nongaussian-
