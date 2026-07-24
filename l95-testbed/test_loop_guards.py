@@ -104,6 +104,17 @@ except RuntimeWarning:
     ok3 = False
 check("export_gap survives a deranged spec (log-space normalization)", ok3)
 
+# --- 3b. the self-gap refusal gate's decision quantity ----------------------
+# the gate refuses when the export disagrees with its own input: the
+# clean Gaussian export sits near zero gap, the deranged spec far above
+# the 0.4 threshold (measured cliff failures were 0.53-2.0)
+pi_g = np.exp(-0.5 * (xg / 0.4) ** 2)
+g_clean = export_gap(spec0, xg, pi_g, 0.4, 0.4)
+g_bad = export_gap(spec_bad, xg, pi_g, 0.4, 0.4)
+check(f"clean export self-gap small ({g_clean:.3f})", g_clean < 0.15)
+check(f"deranged export self-gap past the gate ({g_bad:.2f})",
+      not (g_bad <= 0.4))
+
 # --- 4. defensive-mixture LOO weights ---------------------------------------
 rngt = np.random.default_rng(3)
 n_, kref = 80, 400

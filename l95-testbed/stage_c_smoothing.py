@@ -272,7 +272,16 @@ def density_to_spec(y, hofx, a, seed):
     """DOEE through the export the DA consumes; None if the gates refuse
     OR the export machinery fails outright (e.g. no interior mode). An
     export failure must not kill the run: in --feedback raw the export
-    is diagnostic-only and the loop proceeds on the raw estimate."""
+    is diagnostic-only and the loop proceeds on the raw estimate.
+
+    SELF-GAP GATE (--export-gap-max > 0): the export measures its own
+    L1 disagreement with the raw estimate it was built from and REFUSES
+    to ship a projection beyond the threshold -- the measured failure
+    mode is a CLIFF (healthy gaps <= 0.24 across every pinned run;
+    failures 0.53-2.0 on degraded skewed estimates), and refusal routes
+    into the loop's existing spec-None handling (keep the previous
+    density) instead of feeding the analysis a mangled projection.
+    Default 0 = off, reproducing every pinned table; 0.4 recommended."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         xg, pi, cache = estimate_density(y, hofx, seed, a.lam, a.adaptive)
@@ -283,6 +292,11 @@ def density_to_spec(y, hofx, a, seed):
         spec = None if DY.check(spec) else spec
     except Exception:
         spec = None
+    gmax = getattr(a, "export_gap_max", 0.0)
+    if spec is not None and gmax > 0:
+        g = export_gap(spec, xg, pi, sd, a.assumed_error)
+        if not (g <= gmax):
+            spec = None
     return spec, sd, (xg, pi)
 
 
@@ -685,6 +699,7 @@ def run_windows(a):
           f"{f' relax {a.relax:g}' if a.relax != 1.0 else ''}"
           f"{f' loo-defense {a.loo_defense:g}' if a.loo_defense > 0 else ''}"
           f"{f' fb-smooth {a.feedback_smooth:g}' if a.feedback_smooth > 0 else ''}"
+          f"{f' gap-max {a.export_gap_max:g}' if a.export_gap_max > 0 else ''}"
           f" (regret in nats/ob vs each window's true MAP)")
     g_nll0, g_dnll0 = analytic_nll({"kind": "gaussian",
                                     "sigma": a.assumed_error})
@@ -978,6 +993,7 @@ def selftest():
         assumed_error, max_iters, iter_tol = 0.4, 3, 0.05
         sampler, pff_inflation = "mala", 1.05
         pff_bandwidth, pff_iters = 0.0, 300
+        export_gap_max = 0.0
     p = P0()
     prow = pipeline_window(p, 5, 33, quiet=True)
     print(f"pipeline gaussian null (n {prow['n']}): regret gaussM "
@@ -1064,6 +1080,12 @@ def main():
                          "under the TRUE analytic density: MALA "
                          "reference vs PFF over a bandwidth/iteration "
                          "tuning grid; pooled-innovation mean/sd/skew")
+    ap.add_argument("--export-gap-max", type=float, default=0.0,
+                    help="self-gap refusal gate: the export refuses to "
+                         "ship a projection whose L1 disagreement with "
+                         "its own raw estimate exceeds this (healthy "
+                         "gaps <= 0.24, cliff failures >= 0.53; 0.4 "
+                         "recommended); 0 = off, pinned tables exact")
     ap.add_argument("--assumed-error", type=float, default=0.4)
     ap.add_argument("--windows", type=int, default=0,
                     help="prequential multi-window mode: this many "

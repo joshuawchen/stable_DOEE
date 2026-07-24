@@ -14,9 +14,9 @@ the density from windows 1..w-1; H1 exact; --archive-mode pooled or
 recent(5)).
 
 RECOMMENDED CONFIGURATION (wins on both densities through the
-operational interface, MALA):
+operational interface, MALA and PFF):
 --feedback export --adaptive --loo-defense 0.01 --feedback-smooth 0.1
---archive-mode recent
+--archive-mode recent --export-gap-max 0.4
 
 Loop-stability knobs (all default-off; pinned tables reproduce exactly
 at defaults): --loo-defense DELTA (defensive-mixture LOO weights,
@@ -157,13 +157,28 @@ B. ROUGHNESS-WEIGHTS SPIRAL: adaptive estimates are rough exactly
   Operationally: the recommended configuration wins on both densities
   with BOTH samplers at the replicated level, and the fidelity grid
   being flat means there is nothing to tune.
-- Export hardening (cliff -> slope on degraded skewed estimates) and
-  the PFF calibration ctest (spread vs closed-form posterior, obs
-  perturbation amplitude 0 so all particles share one likelihood --
-  note the current eda_3dvar_pff yaml perturbs obs PER MEMBER, so the
-  coupled particles flow toward different posteriors, an EDA-flow
-  hybrid rather than the paper's PFF; design question flagged to J):
-  Phase 0's remainder now that the parity ctest is done (see 9).
+- Export hardening: DONE as the SELF-GAP REFUSAL GATE
+  (--export-gap-max, default off, 0.4 recommended): the export
+  measures its own L1 disagreement with the raw estimate and refuses
+  to ship past the threshold, routing into the loop's existing
+  spec-None handling (keep the previous density). Grounded in the
+  measured cliff: healthy gaps <= 0.24 in every pinned run, failures
+  0.53-2.0 only on degraded estimates. Guarded in test_loop_guards
+  (3b). Deeper per-side tail work is DEMOTED to optional: the export
+  is acquitted on clean estimates and now refuses bad ones, and the
+  stabilized loop makes bad ones rare (excursions), during which
+  refusing is the right behavior anyway. Port note: the same gate
+  belongs in the Orion export pipeline (run_doee_export) at Phase 4.
+- PFF CALIBRATION CTEST (next oops branch, needs VM iteration):
+  amplitude-0 configuration (all particles share ONE likelihood --
+  the paper's PFF, and the template for Phase 3's loop invocation;
+  the existing per-member-perturbed harness is an EDA-flow hybrid,
+  design question flagged), a bespoke checker in the
+  ObsErrorDiagZeroMeanPerturbations.cc pattern reading the 4 member
+  analyses, comparing the ensemble MEAN to the DRIPCG 3dvar analysis
+  (exact posterior mean, linear-Gaussian) and pinning the SPREAD --
+  the correctness gate the norm diagnostic cannot be (antisymmetry
+  caveat in 5b).
 - Phase 1: 4D Gaussian-equivalence ctest on JEDI l95 (nongaussian-
   costjo fork), then non-Gaussian 4D reference.
 - Rung-1 influence-step LOO: the transport upgrade; the natural home
