@@ -93,6 +93,14 @@ def member_yaml(base, n, nmem, blk, a):
                lambda m: f"obsdatain:\n{m.group(1)}obsfile: "
                          f"Data/phase3_noisy.obt", y)
     y = re.sub(r"eps: [0-9.eE+-]+", f"eps: {a.pff_eps:g}", y)
+    if a.pff_bandwidth_sd != 0.6:
+        # ONLY the minimizer's kernel-bandwidth key (the LAST
+        # standard_deviation in the file); the earlier one is the B
+        # covariance and must stay 0.6 -- the prior weight is not a
+        # tuning knob, the kernel bandwidth is
+        head, _, tail = y.rpartition("standard_deviation: 0.6")
+        y = (head + f"standard_deviation: {a.pff_bandwidth_sd:g}"
+             + tail)
     if blk:
         y = y.replace("      obs operator: {}",
                       "      obs operator: {}\n" + blk, 1)
@@ -144,6 +152,13 @@ def main():
                          "the stable eps ceiling FALLS with member "
                          "count (N=4 stable at 0.05; N=40 diverges); "
                          "start small and let the x1.5 schedule climb")
+    ap.add_argument("--pff-bandwidth-sd", type=float, default=0.6,
+                    help="the minimizer's kernel-bandwidth SD (h^2 = "
+                         "SD^2/N). The paper's construction assumes "
+                         "the ensemble spread EQUALS this; ours grew "
+                         "to ~1.6 in 24h, so the default 0.6 breaks "
+                         "the repulsion/attraction balance once the "
+                         "componentwise kernels revive at large N")
     ap.add_argument("--jo", default="nongaussian",
                     choices=["nongaussian", "gaussian"],
                     help="gaussian = plain Gaussian Jo (no Format A "
