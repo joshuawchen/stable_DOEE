@@ -83,7 +83,8 @@ def block_from_spec(spec):
 def member_yaml(base, n, nmem, blk, a):
     """One member's yaml from the calibration template: member number,
     noisy obs in, per-member obs out, output exp, and the density block
-    inserted under the observer."""
+    inserted under the observer. An empty blk means plain Gaussian Jo
+    (the --jo gaussian discriminator): no block, no jo type."""
     y = base
     y = y.replace("forecast.ens.1.", f"forecast.ens.{n}.")
     y = y.replace("mem001.pff_calibration", f"mem{n:03d}.phase3")
@@ -91,12 +92,13 @@ def member_yaml(base, n, nmem, blk, a):
     y = re.sub(r"obsdatain:\n(\s+)obsfile: [^\n]+",
                lambda m: f"obsdatain:\n{m.group(1)}obsfile: "
                          f"Data/phase3_noisy.obt", y)
-    y = y.replace("      obs operator: {}",
-                  "      obs operator: {}\n" + blk, 1)
-    if "jo type" not in y:
-        y = y.replace("  observations:\n    observers:",
-                      "  observations:\n    jo type: evolving gaussian\n"
-                      "    observers:")
+    if blk:
+        y = y.replace("      obs operator: {}",
+                      "      obs operator: {}\n" + blk, 1)
+        if "jo type" not in y:
+            y = y.replace("  observations:\n    observers:",
+                          "  observations:\n    jo type: evolving "
+                          "gaussian\n    observers:")
     y = re.sub(r"\ntest:\n(  [^\n]+\n?)+", "\n", y)
     return y
 
@@ -134,6 +136,11 @@ def main():
     ap.add_argument("--loo-defense", type=float, default=0.01)
     ap.add_argument("--export-gap-max", type=float, default=0.4)
     ap.add_argument("--assumed-error", type=float, default=0.4)
+    ap.add_argument("--jo", default="nongaussian",
+                    choices=["nongaussian", "gaussian"],
+                    help="gaussian = plain Gaussian Jo (no Format A "
+                         "block): the discriminator for the PFF x "
+                         "CostJoNonGaussian pairing")
     ap.add_argument("--mpiexec", default="mpiexec --oversubscribe")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
@@ -176,7 +183,7 @@ def main():
     fine = np.arange(-6.0, 6.0001, 0.01)
 
     for it in range(a.iters):
-        blk = block_from_spec(spec)
+        blk = block_from_spec(spec) if a.jo == "nongaussian" else ""
         files = []
         for n in range(1, a.members + 1):
             my = member_yaml(base, n, a.members, blk, a)
