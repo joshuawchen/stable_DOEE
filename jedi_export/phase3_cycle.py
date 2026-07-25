@@ -80,6 +80,21 @@ def block_from_spec(spec):
     return DY.to_yaml(spec, indent=6)
 
 
+def set_outer_iterations(y, T):
+    """Replicate the first outer-iteration block T times: the flow's
+    cumulative transport goes like eps*T/N (the update carries 1/N and
+    both eps and the iteration budget are fixed in the template), so
+    the budget must scale with member count."""
+    head, sep, rest = y.partition("  iterations:\n")
+    if not sep:
+        return y
+    m = re.search(r"^\S", rest, re.M)
+    body, tail = rest[:m.start()], rest[m.start():]
+    items = [it for it in re.split(r"(?=^  - )", body, flags=re.M)
+             if it.strip()]
+    return head + sep + items[0] * T + tail
+
+
 def member_yaml(base, n, nmem, blk, a):
     """One member's yaml from the calibration template: member number,
     noisy obs in, per-member obs out, output exp, and the density block
@@ -101,6 +116,8 @@ def member_yaml(base, n, nmem, blk, a):
         head, _, tail = y.rpartition("standard_deviation: 0.6")
         y = (head + f"standard_deviation: {a.pff_bandwidth_sd:g}"
              + tail)
+    if a.pff_outer > 0:
+        y = set_outer_iterations(y, a.pff_outer)
     if blk:
         y = y.replace("      obs operator: {}",
                       "      obs operator: {}\n" + blk, 1)
@@ -159,6 +176,10 @@ def main():
                          "to ~1.6 in 24h, so the default 0.6 breaks "
                          "the repulsion/attraction balance once the "
                          "componentwise kernels revive at large N")
+    ap.add_argument("--pff-outer", type=int, default=0,
+                    help="outer-iteration budget (0 = template count). "
+                         "Transport goes like eps*T/N, so T must scale "
+                         "with member count at fixed eps")
     ap.add_argument("--jo", default="nongaussian",
                     choices=["nongaussian", "gaussian"],
                     help="gaussian = plain Gaussian Jo (no Format A "
