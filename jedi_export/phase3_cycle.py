@@ -109,6 +109,10 @@ def member_yaml(base, n, nmem, blk, a):
                lambda m: f"obsdatain:\n{m.group(1)}obsfile: "
                          f"Data/phase3_noisy.obt", y)
     y = re.sub(r"eps: [0-9.eE+-]+", f"eps: {a.pff_eps:g}", y)
+    if a.obs_pert_amplitude > 0:
+        y = y.replace("obs perturbations amplitude: 0.0",
+                      f"obs perturbations amplitude: "
+                      f"{a.obs_pert_amplitude:g}")
     y = re.sub(r"ct check: \d+", f"ct check: {a.pff_ctcheck}", y)
     if a.pff_bandwidth_sd != 0.6:
         # ONLY the minimizer's kernel-bandwidth key (the LAST
@@ -164,6 +168,19 @@ def main():
     ap.add_argument("--loo-defense", type=float, default=0.01)
     ap.add_argument("--export-gap-max", type=float, default=0.4)
     ap.add_argument("--assumed-error", type=float, default=0.4)
+    ap.add_argument("--estimate-times", default="all",
+                    choices=["all", "sync"],
+                    help="sync = estimate from the analysis-time obs "
+                         "only (the analysis still assimilates all "
+                         "120): the time-displacement discriminator -- "
+                         "off-time obs carry the truth's motion vs the "
+                         "00:00 state as a FIXED structured residual "
+                         "that refresh cannot redraw")
+    ap.add_argument("--obs-pert-amplitude", type=float, default=0.0,
+                    help="member obs perturbation amplitude (the EDA "
+                         "hybrid at a small dose): the spread-deficit "
+                         "discriminator -- inflates member dispersion "
+                         "independently of the flow")
     ap.add_argument("--refresh-obs", action="store_true",
                     help="re-inject fresh obs noise each cycle (same "
                          "truth, new draws): the PREQUENTIAL structure "
@@ -312,6 +329,13 @@ def main():
         jv = [j for j, nm in enumerate(names) if nm == "ObsValue"][0]
         y = np.array([float(r[3 + jv]) for r in rows])
         hofx = y[:, None] - dep
+        if a.estimate_times == "sync":
+            mask = np.array([r[1] == "2010-01-02T00:00:00Z"
+                             for r in rows])
+            y, hofx = y[mask], hofx[mask]
+            if it == 0:
+                print(f"    estimating from {mask.sum()} synchronous "
+                      f"obs of {mask.size}")
 
         nll_e = nll_w
         h_loo, ess = loo_hofx(y, hofx, nll_e, a.members,
