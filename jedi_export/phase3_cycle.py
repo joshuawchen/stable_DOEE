@@ -108,6 +108,7 @@ def member_yaml(base, n, nmem, blk, a):
                lambda m: f"obsdatain:\n{m.group(1)}obsfile: "
                          f"Data/phase3_noisy.obt", y)
     y = re.sub(r"eps: [0-9.eE+-]+", f"eps: {a.pff_eps:g}", y)
+    y = re.sub(r"ct check: \d+", f"ct check: {a.pff_ctcheck}", y)
     if a.pff_bandwidth_sd != 0.6:
         # ONLY the minimizer's kernel-bandwidth key (the LAST
         # standard_deviation in the file); the earlier one is the B
@@ -176,6 +177,15 @@ def main():
                          "to ~1.6 in 24h, so the default 0.6 breaks "
                          "the repulsion/attraction balance once the "
                          "componentwise kernels revive at large N")
+    ap.add_argument("--pff-ctcheck", type=int, default=7,
+                    help="iterations of stable norm before the x1.5 "
+                         "eps growth. The ratchet has NO ceiling and "
+                         "the norm check is partially blind, so on "
+                         "long budgets it walks eps into instability "
+                         "and the redo branch cannot roll positions "
+                         "back; a huge value disables growth for "
+                         "fixed-eps descent with a budgetable "
+                         "transport eps*T/N")
     ap.add_argument("--pff-outer", type=int, default=0,
                     help="outer-iteration budget (0 = template count). "
                          "Transport goes like eps*T/N, so T must scale "
