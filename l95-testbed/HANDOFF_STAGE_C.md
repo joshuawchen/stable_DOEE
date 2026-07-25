@@ -265,6 +265,43 @@ B. ROUGHNESS-WEIGHTS SPIRAL: adaptive estimates are rough exactly
   /R drift (constant 0.4000 all iterations), ObsBias coordinate (0.000
   flat), position bookkeeping (getFirstGuess exact), eps stability per
   se, bandwidth-spread balance, common-background-offset coupling.
+- RUNG 1 CLOSED (depth-2 protocol, matching the sandbox pipeline):
+  it0 L1 0.119 (ESS 33, sd 0.334 at the obs-error floor), it1 under
+  the fed-back heavy density L1 0.158, gate-accepted, flow healthy
+  (norm ~1-2%, Jo monotone) -- the closed DOEE loop demonstrated on
+  real JEDI. TRANSPORT LAW VALIDATED AT A THIRD POINT: N=100 at
+  eps*T/N matched (outer 525) gives sd 0.316, L1 0.132, ESS 82 --
+  identical convergence at matched transport, ESS fraction preserved;
+  N=100 at outer 210 (transport-starved) fails as the law predicts
+  (sd 0.670, ESS 9). All rows in the VM's phase3_table.log.
+- FIXED-DATA ITERATION DRIFT (characterized, gain > 1): depth-3+ on
+  one window's 120 obs drifts superlinearly (0.119 -> 0.158 -> 0.433)
+  with the FLOW healthy every cycle (the monitor separates DA health
+  from estimate health). Refresh + recent-archive pooling + smoothing
+  (rung 2 as built) SLOWS it (settles L1 ~0.33-0.42 over 8 cycles)
+  but gain stays > 1. Two live suspects, discriminators queued for
+  next session (container-harness-tested before shipping, per the new
+  workflow rule): (1) TIME-DISPLACEMENT CONTAMINATION, ranked first --
+  the 120 obs sit at THREE times (22:30/00:00/01:30) all compared to
+  the 00:00 state; the displacement is FIXED across refreshes (same
+  truth), so the pooled archive accumulates the same structured
+  residual; discriminator: estimate from the 40 synchronous obs only.
+  (2) The ~20% member-spread deficit (measured diversity 0.172 vs
+  theoretical 0.216 -- NOT near-copies, the near-copy theory is
+  retired) interacting density-dependently; discriminator: small
+  perturbed-obs spread inflation. Also retired post-fix: the
+  kernels-alive regime at N=40 under fixed eps (SD 1.6 control still
+  over-disperses, sd 0.845) -- dead-kernel descent is the only
+  working regime without AdaGrad, sharpening the Chih-Chi case.
+- WORKFLOW (established this session): the assistant's container
+  holds a live clone + full dependency stack; guard suite + selftest
+  green there (one benign scipy delta in a non-gated diagnostic);
+  jedi_export/test_phase3_driver.py runs the ENTIRE driver against a
+  stub build tree offline -- no driver edit ships without it passing.
+  TODO: package the verbatim PFF transcription (the instrument that
+  found the catapult) as jedi_export/pff_transcription.py.
+- pff-norm-fix PUSHED (fd90c9da); merge into nongaussian-costjo
+  pending -- NOTE the trunk still carries the catapult until then.
 - Rung-1 influence-step LOO: the transport upgrade; the natural home
   for skew if PFF's bias is structural.
 - Figure set: crossover curves (heavy PFF, skewed export) when the
