@@ -228,8 +228,43 @@ B. ROUGHNESS-WEIGHTS SPIRAL: adaptive estimates are rough exactly
   member obt outputs -> defended LOO -> adaptive DOEE -> self-gated
   export -> next iteration's block. Errors INJECTED from a known menu
   density (inject_obs_error.py), so per-iteration L1 against truth is
-  measured. First contact pending: genenspert executable name, oman
-  column naming, mpiexec oversubscribe; --dry-run prints all commands.
+  measured.
+- THE PFF STEPPING/NORM DIAGNOSTIC ARC (first production contact at
+  N=40 found two real defects; five wrong theories were killed by
+  one-command measurements before the instrument that ended it -- a
+  VERBATIM numpy transcription of PFF.h's update law + controller
+  (exact B from ErrorCovarianceL95's spectral-Gaussian circulant,
+  exact kernel h^2 = SD^2/N, exact eps schedule) that reproduces JEDI
+  behavior offline and made fixes testable without VM round-trips):
+  (1) TRANSPORT: the update carries 1/N with fixed eps and a fixed
+  iteration budget, so cumulative transport goes like eps*T/N -- N=40
+  at the stock 21-iteration budget is starved 10x vs N=4. Workaround
+  (yaml): --pff-ctcheck huge (the x1.5 growth ratchet has NO ceiling
+  and the norm check is blind to the damage; disable it) plus
+  --pff-outer ~ 21*N/4. Principled fix: AdaGrad-lineage stepping (the
+  SVGD default, what the sandbox mirror uses; why 400 sandbox
+  particles never saw any of this). Message for Chih-Chi.
+  (2) THE PARTICLE-0 CATAPULT (BUG, FIXED): computeNorm summed the
+  per-particle updates INTO rank 0's update variable (by-reference
+  clobber) to form the collective norm -- rank 0 then applied the
+  N-fold summed update as its own step every iteration, and each
+  rank's controller watched a DIFFERENT norm (rank 0 the sum, the
+  rest their own). Explains the measured mem001 pump-peak-recover
+  (sd 1.67 -> 7.9 @ k~90 -> recovery at exactly the (eps/N)
+  contraction rate), the impossible ensemble-mean drift, and why
+  every eps/SD tuning failed. Transcription reproduces it exactly
+  (bug on: mem0 explodes, ensemble contaminated; bug off: healthy).
+  Fix: jedi_export/patches/pff_norm_fix.patch (copy-based summation +
+  collective norm broadcast), branch pff-norm-fix; references
+  regenerated; CALIBRATION IMPROVED: meanDev 0.231 -> 0.174, spread
+  0.556 -> 0.395 (the old numbers included the corrupted member).
+  Post-fix N=40 Gaussian control (ctcheck 999, outer 210): sd 0.334
+  (obs-error floor), ESS 33/40, L1(heavy truth) 0.119 --
+  sandbox-grade from 120 obs x 40 members through real JEDI.
+  Acquitted along the way (each by direct measurement): EffectiveError
+  /R drift (constant 0.4000 all iterations), ObsBias coordinate (0.000
+  flat), position bookkeeping (getFirstGuess exact), eps stability per
+  se, bandwidth-spread balance, common-background-offset coupling.
 - Rung-1 influence-step LOO: the transport upgrade; the natural home
   for skew if PFF's bias is structural.
 - Figure set: crossover curves (heavy PFF, skewed export) when the
