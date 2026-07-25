@@ -276,9 +276,17 @@ def main():
             continue
 
         warn = 0
+        flow = ""
         logp = os.path.join(a.build, f"phase3_it{it}.log")
         if os.path.exists(logp):
-            warn = open(logp).read().count("JoJc is negative")
+            txt = open(logp).read()
+            warn = txt.count("JoJc is negative")
+            norms = re.findall(r"norm: ([0-9.eE+-]+)", txt)
+            jos = re.findall(r"Nonlinear Jo\(Lorenz 95\) = ([0-9.eE+-]+)",
+                             txt)
+            if norms and jos:
+                flow = (f"  flow[norm {float(norms[-1]):.0f}% "
+                        f"Jo {float(jos[0]):.0f}->{float(jos[-1]):.0f}]")
 
         dep = collect_oman(a, it)                     # y - H(x_a)
         names, rows, _ = read_obt(os.path.join(a.build, "Data",
@@ -314,7 +322,8 @@ def main():
               if pt is not None else float("nan"))
         gate = "accepted" if new_spec is not None else "REFUSED"
         line = (f"  it {it}: sd {sd:.3f}  L1(truth) {l1:.3f}  "
-                f"ESS {ess:.0f}  export {gate}  jojc-warnings {warn}")
+                f"ESS {ess:.0f}  export {gate}  jojc-warnings {warn}"
+                f"{flow}")
         print(line)
         with open(os.path.join(a.build, "phase3_table.log"), "a") as f:
             f.write(line + "\n")
