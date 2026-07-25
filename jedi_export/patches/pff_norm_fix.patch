@@ -1,0 +1,35 @@
+diff --git a/src/oops/assimilation/PFF.h b/src/oops/assimilation/PFF.h
+index e621322b..b60373a9 100644
+--- a/src/oops/assimilation/PFF.h
++++ b/src/oops/assimilation/PFF.h
+@@ -265,9 +265,13 @@ void PFF<MODEL, OBS>::dxi(CtrlInc_ & dx, const CtrlVar_ & xxlocal, CtrlVar_ & xx
+ 
+   dxij *= 1/static_cast<double>(nmembers_);
+ 
++  // computeNorm SUMS the per-particle updates on rank 0 to form the
++  // collective norm; it must operate on a COPY, or rank 0 applies the
++  // N-fold summed update as its own step (the particle-0 catapult).
++  CtrlInc_ dxijSum(dxij);
+   CtrlInc_ dxijOther(dxij);
+ 
+-  computeNorm(dxij, dxijOther, comm);
++  computeNorm(dxijSum, dxijOther, comm);
+   norms[2] = norm_;
+ 
+   if (iter_ == 0) {
+@@ -394,7 +398,14 @@ void PFF<MODEL, OBS>::computeNorm(CtrlInc_ & dxij, CtrlInc_ & dxijOther,
+       oops::mpi::send(comm, dxij, i, tagSend);
+   }
+ 
+-  norm_ = sqrt(dot_product(dxij, dxij) / (static_cast<double>(nmembers_  * resolution_)));
++  if (myrank_ == 0) {
++    norm_ = sqrt(dot_product(dxij, dxij)
++                 / (static_cast<double>(nmembers_ * resolution_)));
++  }
++  // one collective norm for every rank's controller: without the
++  // broadcast each rank watches a DIFFERENT vector (rank 0 the sum,
++  // the rest their own update) and the eps controllers desynchronize
++  comm.broadcast(norm_, 0);
+ }
+ // -----------------------------------------------------------------------------------
+ }  // namespace oops
