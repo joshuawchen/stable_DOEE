@@ -92,6 +92,7 @@ def member_yaml(base, n, nmem, blk, a):
     y = re.sub(r"obsdatain:\n(\s+)obsfile: [^\n]+",
                lambda m: f"obsdatain:\n{m.group(1)}obsfile: "
                          f"Data/phase3_noisy.obt", y)
+    y = re.sub(r"eps: [0-9.eE+-]+", f"eps: {a.pff_eps:g}", y)
     if blk:
         y = y.replace("      obs operator: {}",
                       "      obs operator: {}\n" + blk, 1)
@@ -136,6 +137,13 @@ def main():
     ap.add_argument("--loo-defense", type=float, default=0.01)
     ap.add_argument("--export-gap-max", type=float, default=0.4)
     ap.add_argument("--assumed-error", type=float, default=0.4)
+    ap.add_argument("--pff-eps", type=float, default=0.05,
+                    help="initial flow learning rate. The componentwise "
+                         "kernel's 1-D neighbor spacing shrinks ~1/N "
+                         "while the repulsion prefactor grows ~N, so "
+                         "the stable eps ceiling FALLS with member "
+                         "count (N=4 stable at 0.05; N=40 diverges); "
+                         "start small and let the x1.5 schedule climb")
     ap.add_argument("--jo", default="nongaussian",
                     choices=["nongaussian", "gaussian"],
                     help="gaussian = plain Gaussian Jo (no Format A "
