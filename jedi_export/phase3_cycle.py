@@ -192,8 +192,11 @@ def main():
                     help="pool LOO rows over this many recent cycles "
                          "before estimating (the sandbox recent-archive "
                          "mode); 1 = no pooling")
-    ap.add_argument("--feedback-smooth", type=float, default=0.1,
-                    help="blend weight on the PREVIOUS density when "
+    ap.add_argument("--feedback-smooth", type=float, default=0.0,
+                    help="CONVICTED ACCELERANT in the refresh regime "
+                         "(0.42 vs 0.22 plateau at matched knobs), "
+                         "default now OFF pending a line audit of the "
+                         "port. Original intent: blend weight on the "
                          "forming each iteration's export (the sandbox "
                          "stabilizer for self-consistent iteration on "
                          "fixed data: analysis under a heavier density "
