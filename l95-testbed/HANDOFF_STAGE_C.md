@@ -169,18 +169,64 @@ B. ROUGHNESS-WEIGHTS SPIRAL: adaptive estimates are rough exactly
   stabilized loop makes bad ones rare (excursions), during which
   refusing is the right behavior anyway. Port note: the same gate
   belongs in the Orion export pipeline (run_doee_export) at Phase 4.
-- PFF CALIBRATION CTEST (next oops branch, needs VM iteration):
-  amplitude-0 configuration (all particles share ONE likelihood --
-  the paper's PFF, and the template for Phase 3's loop invocation;
-  the existing per-member-perturbed harness is an EDA-flow hybrid,
-  design question flagged), a bespoke checker in the
-  ObsErrorDiagZeroMeanPerturbations.cc pattern reading the 4 member
-  analyses, comparing the ensemble MEAN to the DRIPCG 3dvar analysis
-  (exact posterior mean, linear-Gaussian) and pinning the SPREAD --
-  the correctness gate the norm diagnostic cannot be (antisymmetry
-  caveat in 5b).
-- Phase 1: 4D Gaussian-equivalence ctest on JEDI l95 (nongaussian-
-  costjo fork), then non-Gaussian 4D reference.
+- PFF CALIBRATION CTEST: DONE. Branch pff-calibration-ctest
+  (6ef3251c + 03e2d2ae), four-test chain all green: ens-mean
+  background (l95_ens_mean_variance.x) -> exact DRPCG 3D-Var from the
+  mean background (= the conformant flow's target posterior mean;
+  prior anchor is x_bar_b) -> shared-likelihood PFF at obs
+  perturbation amplitude 0 (the paper's configuration and the Phase 3
+  loop template) -> bespoke checker (l95/test/lorenz95/
+  PFFCalibration.cc). FIRST MEASURED CALIBRATION OF THE CONFORMANT
+  FLOW: ensemble mean rms deviation from the exact posterior mean
+  0.2307 (21-step x eps 0.05 budget residual: the norm plateaus at
+  ~15% of initial, so ~85% of the mean signal is captured -- budget,
+  not correctness; the converged sandbox flow matches to ~0.001);
+  ensemble SPREAD 0.5564 -- contracted from the ~0.6 prior, NOT
+  collapsed: the anti-collapse gate the summed-update norm cannot be,
+  with hard yaml-configurable bands (mean tolerance 0.30 documented as
+  the budget bound; spread in [0.01, 0.80]). Member analysis filenames
+  are DATELESS (Data/pff_calibration.mem00N.a.l95) -- learned at first
+  contact.
+- PHASE 1 4D GATES: DONE. Branch nongaussian-4dvar (3d8b5d43 ..
+  f4be3db0), both tests green.
+  (a) 4dvar_gaussequiv: the non-Gaussian machinery with a DEGENERATE
+  Gaussian Format A spec inside full 4D-Var reproduces stock
+  4dvar_dripcg to 7-8 significant digits at every evaluation (J
+  124.1839566 vs 124.1839529 -> 3.2835359 vs 3.2835359 -> 3.0311036
+  vs 3.0311036); the residual is EXACTLY float32(0.4) vs double 0.4 in
+  the obt obs-error storage. Strict-generalization PROVEN at the 4D
+  application level.
+  (b) 4dvar_nongaussian: the heavy Format A density in full 4D-Var
+  with EvolvingSigma saved -- the first genuinely non-Gaussian 4D
+  reference (DRPCG, ninner 10, 20-line reference from a completed
+  run).
+  FINDING on the way (jedi_export/patches/jojc_warning.patch, on the
+  branch): the DR minimizers' checkQuadraticCostFunction asserted
+  quadratic JoJc >= 0 -- a Gaussian sum-of-squares premise. Small
+  theorem: with the evolving-variance SECANT Hessian, W^-1 g = (d - m)
+  exactly, so the quadratic model's Jo minimum is EXACTLY ZERO --
+  except inside the mode window and at the sigma floor, where the
+  variance is deliberately not (d-m)/g and small negative excursions
+  are legitimate (measured: -0.111 and -0.718 against J0 = 33,
+  identical under DRIPCG and DRPCG). Fix: JoJc-negative demoted to a
+  warning; Jb-negative, inf, NaN remain fatal. Compatibility note for
+  Phase 3/4: expect these warnings in non-Gaussian minimizations;
+  they are diagnostics, not faults.
+- C++ BRANCH LEDGER (joshuawchen/oops; all pushed, all ctests green):
+  1. pff-paper-conformance b6065682+cfce66fa -- PFF.h matches the
+     paper; eda_3dvar_pff reference regenerated. MERGE TO
+     nongaussian-costjo PENDING at J's discretion (then rebase or
+     merge the other branches, which were cut from the trunk except
+     pff-calibration-ctest, cut from pff-paper-conformance).
+  2. format-a-parity-ctest 0a12c229 -- 184 comparisons at 1e-9, green
+     on first compile.
+  3. pff-calibration-ctest 6ef3251c+03e2d2ae -- see above.
+  4. nongaussian-4dvar 3d8b5d43..f4be3db0 -- see above; carries the
+     jojc warning fix.
+- Phase 3 (next major): the Python loop wrapping JEDI l95 -- per
+  cycle: JEDI 4D-Var analysis -> PFF ensemble (amplitude 0, the
+  calibration template) -> LOO + DOEE in Python -> Format A export ->
+  next cycle's yaml. All ingredients now individually gated.
 - Rung-1 influence-step LOO: the transport upgrade; the natural home
   for skew if PFF's bias is structural.
 - Figure set: crossover curves (heavy PFF, skewed export) when the
