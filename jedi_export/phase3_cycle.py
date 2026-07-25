@@ -51,7 +51,8 @@ import doee_to_yaml as DY                                  # noqa: E402
 from make_parity_fixtures import density as menu_density   # noqa: E402
 from inject_obs_error import inject, read_obt              # noqa: E402
 from map_reference import spec_nll                         # noqa: E402
-from stage_c_smoothing import density_to_spec, loo_hofx    # noqa: E402
+from stage_c_smoothing import (density_to_spec, loo_hofx,        # noqa: E402
+                               raw_nll_from_estimate, smooth_pdf)
 
 GAUSS0 = {
     "mode": 0.0, "grid spacing": 2.0e-6, "stable min": -1.0e-6,
@@ -163,6 +164,14 @@ def main():
     ap.add_argument("--loo-defense", type=float, default=0.01)
     ap.add_argument("--export-gap-max", type=float, default=0.4)
     ap.add_argument("--assumed-error", type=float, default=0.4)
+    ap.add_argument("--feedback-smooth", type=float, default=0.1,
+                    help="blend weight on the PREVIOUS density when "
+                         "forming each iteration's export (the sandbox "
+                         "stabilizer for self-consistent iteration on "
+                         "fixed data: analysis under a heavier density "
+                         "loosens tail fits, which reads as heavier "
+                         "tails -- damping breaks the self-"
+                         "reinforcement). 0 = off")
     ap.add_argument("--pff-eps", type=float, default=0.05,
                     help="initial flow learning rate. The componentwise "
                          "kernel's 1-D neighbor spacing shrinks ~1/N "
@@ -233,6 +242,7 @@ def main():
                                assumed_error=a.assumed_error,
                                export_gap_max=a.export_gap_max)
     spec = dict(GAUSS0)
+    nll_w = spec_nll(spec, 12.0 * a.assumed_error)[0]
     rng = np.random.default_rng(a.seed + 100)
     fine = np.arange(-6.0, 6.0001, 0.01)
 
@@ -270,12 +280,27 @@ def main():
         y = np.array([float(r[3 + jv]) for r in rows])
         hofx = y[:, None] - dep
 
-        nll_e, _ = spec_nll(spec, 12.0 * a.assumed_error)
+        nll_e = nll_w
         h_loo, ess = loo_hofx(y, hofx, nll_e, a.members,
                               np.random.default_rng(a.seed + 7 + it),
                               a.loo_defense)
         new_spec, sd, (xg, pi) = density_to_spec(y, h_loo, est_args,
                                                  a.seed + it)
+        # the sandbox stabilizer, ported faithfully: the NEXT
+        # iteration's LOO weights come from the SMOOTHED raw estimate,
+        # never from the exported spec's verbatim interior slopes --
+        # the roughness-weights spiral cannot re-enter through the
+        # export (stage_c export mode, --feedback-smooth)
+        if a.feedback_smooth > 0:
+            fineg = np.arange(-8.0, 8.0001, 0.02)
+            pf = np.interp(fineg, xg, pi, left=0.0, right=0.0)
+            cand = raw_nll_from_estimate(
+                fineg, smooth_pdf(pf, 0.02, a.feedback_smooth))
+            tst = np.arange(-6.0, 6.0001, 0.05)
+            if all(np.all(np.isfinite(cand[j](tst))) for j in (0, 1)):
+                nll_w = cand[0]
+        elif new_spec is not None:
+            nll_w = spec_nll(new_spec, 12.0 * a.assumed_error)[0]
         pt = menu_density(inj, fine) if inj else None
         pe = np.interp(fine, xg, pi, left=0.0, right=0.0)
         l1 = (float(np.trapezoid(np.abs(pe - pt), fine))
