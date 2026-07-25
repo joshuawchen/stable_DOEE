@@ -42,6 +42,13 @@ def draw(name, rng, n, scale=1.0):
     if name == "laplace":
         b = 0.3 * scale
         return rng.laplace(0.0, b, n), {"kind": "laplace", "b": b}
+    if name == "skewed":                    # the Stage C skewmix
+        w, m1, s1 = 0.8, -0.1 * scale, 0.25 * scale
+        m2, s2 = 0.4 * scale, 0.45 * scale
+        pick = rng.random(n) < w
+        e = np.where(pick, rng.normal(m1, s1, n), rng.normal(m2, s2, n))
+        return e, {"kind": "skewmix", "w": w, "m1": m1, "s1": s1,
+                   "m2": m2, "s2": s2}
     if name == "mirrored_gamma":
         # the density of the reference's idealised experiment, rescaled:
         #   f(x) = -(x-2)/4 exp((x-2)/2) for x <= 2, mode at 0
@@ -111,7 +118,8 @@ def main():
     ap.add_argument("infile")
     ap.add_argument("outfile")
     ap.add_argument("--density", default="heavy",
-                    choices=["gaussian", "heavy", "laplace", "mirrored_gamma"])
+                    choices=["gaussian", "heavy", "skewed", "laplace",
+                             "mirrored_gamma"])
     ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--assumed-error", type=float, default=None,

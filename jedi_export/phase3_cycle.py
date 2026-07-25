@@ -108,13 +108,13 @@ def collect_oman(a, it):
     for n in range(1, a.members + 1):
         path = os.path.join(a.build, "Data",
                             f"mem{n:03d}.phase3.2010-01-02T00:00:00Z.obt")
-        names, rows = read_obt(path)
+        names, rows, _ = read_obt(path)
         names_seen = names
         cand = [j for j, nm in enumerate(names) if "oman" in nm.lower()]
         if not cand:
             raise SystemExit(
                 f"no oman column in {path}; columns: {names}")
-        deps.append(np.array([r[3 + cand[-1]] for r in rows], float))
+        deps.append(np.array([float(r[3 + cand[-1]]) for r in rows]))
     print(f"    [it {it}] columns available: {names_seen}")
     return np.column_stack(deps)          # n_obs x members
 
@@ -156,14 +156,14 @@ def main():
        f"> phase3_genens.log 2>&1", a, a.build)
 
     # --- inject the known error density into the truth obs -------------
+    inj = None
     if not a.dry_run:
-        inject(os.path.join(a.build, "Data",
-                            "truth3d.2010-01-02T00:00:00Z.obt"),
-               os.path.join(a.build, "Data", "phase3_noisy.obt"),
-               density=a.density, scale=a.scale, seed=a.seed)
-    tr = os.path.join(a.build, "Data", "phase3_noisy.obt.npz")
-    inj = (dict(np.load(tr, allow_pickle=True)["spec"].item())
-           if not a.dry_run and os.path.exists(tr) else None)
+        inj = inject(os.path.join(a.build, "Data",
+                                  "truth3d.2010-01-02T00:00:00Z.obt"),
+                     os.path.join(a.build, "Data", "phase3_noisy.obt"),
+                     density=a.density, scale=a.scale, seed=a.seed)
+        print(f"  injected {inj['density']}: sample sigma "
+              f"{inj['sample_sigma']:.3f}")
 
     base = open(os.path.join(
         a.oops, "l95/test/testinput/pff_calibration_1.yaml")).read()
@@ -203,10 +203,10 @@ def main():
             warn = open(logp).read().count("JoJc is negative")
 
         dep = collect_oman(a, it)                     # y - H(x_a)
-        names, rows = read_obt(os.path.join(a.build, "Data",
-                                            "phase3_noisy.obt"))
+        names, rows, _ = read_obt(os.path.join(a.build, "Data",
+                                               "phase3_noisy.obt"))
         jv = [j for j, nm in enumerate(names) if nm == "ObsValue"][0]
-        y = np.array([r[3 + jv] for r in rows], float)
+        y = np.array([float(r[3 + jv]) for r in rows])
         hofx = y[:, None] - dep
 
         nll_e, _ = spec_nll(spec, 12.0 * a.assumed_error)
