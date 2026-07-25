@@ -213,6 +213,13 @@ def main():
 
     print(f"phase 3 rung 1: density {a.density}, members {a.members}, "
           f"iters {a.iters}, seed {a.seed}")
+    if not a.dry_run:
+        with open(os.path.join(a.build, "phase3_table.log"), "a") as f:
+            f.write(f"RUN members {a.members} density {a.density} "
+                    f"iters {a.iters} seed {a.seed} jo {a.jo} "
+                    f"eps {a.pff_eps} sd {a.pff_bandwidth_sd} "
+                    f"ct {a.pff_ctcheck} outer {a.pff_outer} "
+                    f"smooth {a.feedback_smooth}\n")
 
     # --- ensemble backgrounds at the requested member count ------------
     gy = open(os.path.join(a.oops,
@@ -306,8 +313,14 @@ def main():
         l1 = (float(np.trapezoid(np.abs(pe - pt), fine))
               if pt is not None else float("nan"))
         gate = "accepted" if new_spec is not None else "REFUSED"
-        print(f"  it {it}: sd {sd:.3f}  L1(truth) {l1:.3f}  "
-              f"ESS {ess:.0f}  export {gate}  jojc-warnings {warn}")
+        line = (f"  it {it}: sd {sd:.3f}  L1(truth) {l1:.3f}  "
+                f"ESS {ess:.0f}  export {gate}  jojc-warnings {warn}")
+        print(line)
+        with open(os.path.join(a.build, "phase3_table.log"), "a") as f:
+            f.write(line + "\n")
+        np.savez(os.path.join(a.build, f"phase3_it{it}_density.npz"),
+                 xg=xg, pi=pi, l1=l1, sd=sd, ess=ess,
+                 accepted=new_spec is not None)
         if new_spec is not None:
             spec = new_spec
 
