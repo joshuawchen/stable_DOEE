@@ -212,21 +212,24 @@ B. ROUGHNESS-WEIGHTS SPIRAL: adaptive estimates are rough exactly
   warning; Jb-negative, inf, NaN remain fatal. Compatibility note for
   Phase 3/4: expect these warnings in non-Gaussian minimizations;
   they are diagnostics, not faults.
-- C++ BRANCH LEDGER (joshuawchen/oops; all pushed, all ctests green):
-  1. pff-paper-conformance b6065682+cfce66fa -- PFF.h matches the
-     paper; eda_3dvar_pff reference regenerated. MERGE TO
-     nongaussian-costjo PENDING at J's discretion (then rebase or
-     merge the other branches, which were cut from the trunk except
-     pff-calibration-ctest, cut from pff-paper-conformance).
-  2. format-a-parity-ctest 0a12c229 -- 184 comparisons at 1e-9, green
-     on first compile.
-  3. pff-calibration-ctest 6ef3251c+03e2d2ae -- see above.
-  4. nongaussian-4dvar 3d8b5d43..f4be3db0 -- see above; carries the
-     jojc warning fix.
-- Phase 3 (next major): the Python loop wrapping JEDI l95 -- per
-  cycle: JEDI 4D-Var analysis -> PFF ensemble (amplitude 0, the
-  calibration template) -> LOO + DOEE in Python -> Format A export ->
-  next cycle's yaml. All ingredients now individually gated.
+- C++ TRUNK MERGED: nongaussian-costjo at 11ff16cd carries all four
+  branches (--no-ff merges, conflict-free); the merged trunk builds
+  and passes 153/153 l95+assimilation tests with ZERO reference
+  regeneration -- the composition proof. Branch history (for the
+  record): pff-paper-conformance b6065682+cfce66fa;
+  format-a-parity-ctest 0a12c229; pff-calibration-ctest
+  6ef3251c+03e2d2ae; nongaussian-4dvar 3d8b5d43..f4be3db0 (carries the
+  jojc warning fix).
+- Phase 3 (IN PROGRESS): jedi_export/phase3_cycle.py -- rung 1, the
+  first closed DOEE loop through real JEDI. Fixed l95 window, iterated:
+  N-member amplitude-0 ensemble analysis under the current Format A
+  density (iteration 0 = the degenerate Gaussian spec, so only the
+  non-Gaussian code path runs) -> oman departures collected from the
+  member obt outputs -> defended LOO -> adaptive DOEE -> self-gated
+  export -> next iteration's block. Errors INJECTED from a known menu
+  density (inject_obs_error.py), so per-iteration L1 against truth is
+  measured. First contact pending: genenspert executable name, oman
+  column naming, mpiexec oversubscribe; --dry-run prints all commands.
 - Rung-1 influence-step LOO: the transport upgrade; the natural home
   for skew if PFF's bias is structural.
 - Figure set: crossover curves (heavy PFF, skewed export) when the
