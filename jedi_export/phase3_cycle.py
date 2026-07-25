@@ -164,6 +164,17 @@ def main():
     ap.add_argument("--loo-defense", type=float, default=0.01)
     ap.add_argument("--export-gap-max", type=float, default=0.4)
     ap.add_argument("--assumed-error", type=float, default=0.4)
+    ap.add_argument("--refresh-obs", action="store_true",
+                    help="re-inject fresh obs noise each cycle (same "
+                         "truth, new draws): the PREQUENTIAL structure "
+                         "on fixed geometry -- breaks the error "
+                         "correlation that makes fixed-data iteration "
+                         "drift (gain>1 measured: L1 0.119 -> 0.158 -> "
+                         "0.433 at depth 3)")
+    ap.add_argument("--archive-windows", type=int, default=5,
+                    help="pool LOO rows over this many recent cycles "
+                         "before estimating (the sandbox recent-archive "
+                         "mode); 1 = no pooling")
     ap.add_argument("--feedback-smooth", type=float, default=0.1,
                     help="blend weight on the PREVIOUS density when "
                          "forming each iteration's export (the sandbox "
@@ -253,7 +264,14 @@ def main():
     rng = np.random.default_rng(a.seed + 100)
     fine = np.arange(-6.0, 6.0001, 0.01)
 
+    arch_y, arch_h = [], []
     for it in range(a.iters):
+        if a.refresh_obs and it > 0 and not a.dry_run:
+            inject(os.path.join(a.build, "Data",
+                                "truth3d.2010-01-02T00:00:00Z.obt"),
+                   os.path.join(a.build, "Data", "phase3_noisy.obt"),
+                   density=a.density, scale=a.scale,
+                   seed=a.seed + 1000 * it)
         blk = block_from_spec(spec) if a.jo == "nongaussian" else ""
         files = []
         for n in range(1, a.members + 1):
@@ -299,7 +317,12 @@ def main():
         h_loo, ess = loo_hofx(y, hofx, nll_e, a.members,
                               np.random.default_rng(a.seed + 7 + it),
                               a.loo_defense)
-        new_spec, sd, (xg, pi) = density_to_spec(y, h_loo, est_args,
+        arch_y.append(y); arch_h.append(h_loo)
+        if len(arch_y) > max(1, a.archive_windows):
+            arch_y.pop(0); arch_h.pop(0)
+        y_est = np.concatenate(arch_y)
+        h_est = np.concatenate(arch_h, axis=0)
+        new_spec, sd, (xg, pi) = density_to_spec(y_est, h_est, est_args,
                                                  a.seed + it)
         # the sandbox stabilizer, ported faithfully: the NEXT
         # iteration's LOO weights come from the SMOOTHED raw estimate,
