@@ -51,8 +51,9 @@ import doee_to_yaml as DY                                  # noqa: E402
 from make_parity_fixtures import density as menu_density   # noqa: E402
 from inject_obs_error import inject, read_obt              # noqa: E402
 from map_reference import spec_nll                         # noqa: E402
-from stage_c_smoothing import (density_to_spec, loo_hofx,        # noqa: E402
-                               raw_nll_from_estimate, smooth_pdf)
+from stage_c_smoothing import (apply_tail_guards, density_to_spec,  # noqa: E402
+                               loo_hofx, raw_nll_from_estimate,
+                               smooth_pdf)
 
 GAUSS0 = {
     "mode": 0.0, "grid spacing": 2.0e-6, "stable min": -1.0e-6,
@@ -192,6 +193,17 @@ def main():
                     help="pool LOO rows over this many recent cycles "
                          "before estimating (the sandbox recent-archive "
                          "mode); 1 = no pooling")
+    ap.add_argument("--tail-rate-max", type=float, default=0.0,
+                    help="cap each side's exported tail sigma at this "
+                         "factor times the FED spec's per cycle; "
+                         "narrowing is unconstrained. The measured remedy "
+                         "for the tail-widening feedback drift. "
+                         "0 = off (pinned behavior); 1.3 recommended")
+    ap.add_argument("--tail-sigma-floor", type=float, default=0.0,
+                    help="absolute lower bound on each exported tail "
+                         "sigma; guards the narrow-ratchet cliff "
+                         "(near-compact fed side detonates LOO "
+                         "weights). 0 = off; 0.25*assumed recommended")
     ap.add_argument("--feedback-smooth", type=float, default=0.0,
                     help="CONVICTED ACCELERANT in the refresh regime "
                          "(0.42 vs 0.22 plateau at matched knobs), "
@@ -351,6 +363,8 @@ def main():
         h_est = np.concatenate(arch_h, axis=0)
         new_spec, sd, (xg, pi) = density_to_spec(y_est, h_est, est_args,
                                                  a.seed + it)
+        new_spec = apply_tail_guards(new_spec, spec, a.tail_rate_max,
+                                     a.tail_sigma_floor)
         # the sandbox stabilizer, ported faithfully: the NEXT
         # iteration's LOO weights come from the SMOOTHED raw estimate,
         # never from the exported spec's verbatim interior slopes --

@@ -268,6 +268,41 @@ def export_gap(spec, xg, pi, sd, assumed):
     return float(np.abs(p - q).sum() * 0.02)
 
 
+def apply_tail_guards(spec_new, spec_fed, rate_max=0.0, sigma_floor=0.0):
+    """Slew-rate limit on the export's tail sigmas, the measured drift
+    remedy: gaussian_tails' per-side continuation fit is a polyfit over
+    the outer 8 percent of mass -- high-variance noise -- and its clip
+    window [0.3 sd, 3 sd] admits an 11x tail-sigma jump in one cycle.
+    Fed back, tail widening is a positive-feedback loop (recovered tail
+    crosses gain 1 near fed sigma 1) and the offline mirror reproduces
+    the full JEDI fixed-data drift through exactly this channel.
+
+    rate_max > 0: each side's exported tail sigma may exceed the FED
+    spec's by at most that factor per cycle; narrowing is unconstrained (a
+    symmetric rate limit blocks the fast re-closing the loop needs
+    after an excursion -- measured, E7). sigma_floor > 0: absolute
+    lower bound per side; unlimited narrowing has its own cliff (a
+    near-compact fed side detonates the 1/pi LOO weights -- measured,
+    E6, right tail ratcheting 0.16 -> 0.05, ESS 12). Defaults 0/0 are
+    both OFF, reproducing every pinned table; 1.3 / 0.25*assumed_error
+    recommended. Returns a new dict; None passes through."""
+    if spec_new is None or (rate_max <= 0 and sigma_floor <= 0):
+        return spec_new
+    out = dict(spec_new)
+    for side in ("left curvature", "right curvature"):
+        dd = out[side]
+        if rate_max > 0:
+            bound = spec_fed[side] / (rate_max * rate_max)
+            if dd > bound:          # sigma_cand > rate_max * sigma_fed
+                dd = bound
+        if sigma_floor > 0:
+            flr = -1.0 / (sigma_floor * sigma_floor)
+            if dd < flr:            # sigma_cand < sigma_floor
+                dd = flr
+        out[side] = dd              # untouched sides pass bit-identical
+    return out
+
+
 def density_to_spec(y, hofx, a, seed):
     """DOEE through the export the DA consumes; None if the gates refuse
     OR the export machinery fails outright (e.g. no interior mode). An

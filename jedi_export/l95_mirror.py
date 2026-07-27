@@ -29,7 +29,8 @@ sys.path.insert(0, os.path.join(HERE, ".."))
 
 from make_parity_fixtures import density as menu_density, MENU  # noqa
 from map_reference import spec_nll                              # noqa
-from stage_c_smoothing import density_to_spec, loo_hofx         # noqa
+from stage_c_smoothing import (apply_tail_guards, density_to_spec,  # noqa
+                               loo_hofx)
 
 D = 40
 DT = 0.0125
@@ -156,16 +157,28 @@ def flow(world, dnll, eps0, T, ctcheck, bandwidth_sd=0.6):
     return X
 
 
-def cycle_metrics(world, Xa, spec, est, seed, fine, pt):
+def cycle_metrics(world, Xa, spec, est, seed, fine, pt, arch=None):
+    """arch=(arch_y, arch_h, K): the driver's recent-K archive --
+    LOO on the current window, estimation on the pooled archive
+    (phase3_cycle lines 344-353 made mirror-native). arch=None
+    reproduces the committed single-window behavior exactly."""
     y = world.y
     dep = y[None, :] - hofx(Xa)
     nll = spec_nll(spec, 4.8)[0]
     h_loo, ess = loo_hofx(y, (y[None, :] - dep).T, nll,
                           Xa.shape[0], np.random.default_rng(seed),
                           0.01)
+    y_est, h_est = y, h_loo
+    if arch is not None:
+        arch_y, arch_h, K = arch
+        arch_y.append(y.copy()); arch_h.append(h_loo)
+        if len(arch_y) > max(1, K):
+            arch_y.pop(0); arch_h.pop(0)
+        y_est = np.concatenate(arch_y)
+        h_est = np.concatenate(arch_h, axis=0)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        new_spec, sd, (xg, pi) = density_to_spec(y, h_loo, est,
+        new_spec, sd, (xg, pi) = density_to_spec(y_est, h_est, est,
                                                  seed + 5)
     pe = np.interp(fine, xg, pi, left=0, right=0)
     l1 = float(np.trapezoid(np.abs(pe - pt), fine))
@@ -180,7 +193,8 @@ def cycle_metrics(world, Xa, spec, est, seed, fine, pt):
 
 def run_loop(members=40, iters=2, seed=7, eps=0.05, outer=210,
              ctcheck=10 ** 9, refresh=False, an_err=0.55, quiet=False,
-             fields=None, bandwidth_sd=0.6, spec_edit=None):
+             fields=None, bandwidth_sd=0.6, spec_edit=None,
+             archive_windows=1, tail_rate_max=0.0, tail_sigma_floor=0.0):
     est = SimpleNamespace(lam=None, adaptive=True, assumed_error=0.4,
                           export_gap_max=0.4)
     fine = np.arange(-6, 6.0001, 0.01)
@@ -194,6 +208,8 @@ def run_loop(members=40, iters=2, seed=7, eps=0.05, outer=210,
     if not quiet:
         print(f"  ombg sd {ombg:.3f}")
     spec = dict(GAUSS0)
+    arch = (([], [], archive_windows)
+            if archive_windows and archive_windows > 1 else None)
     rows = []
     for it in range(iters):
         if refresh and it > 0:
@@ -203,7 +219,10 @@ def run_loop(members=40, iters=2, seed=7, eps=0.05, outer=210,
             use.update(spec_edit)
         dnll = spec_nll(use, 4.8)[1]
         Xa = flow(world, dnll, eps, outer, ctcheck, bandwidth_sd)
-        m = cycle_metrics(world, Xa, use, est, seed + it, fine, pt)
+        m = cycle_metrics(world, Xa, use, est, seed + it, fine, pt,
+                          arch)
+        m.spec = apply_tail_guards(m.spec, use, tail_rate_max,
+                                   tail_sigma_floor)
         m.ombg = ombg
         rows.append(m)
         if not quiet:
@@ -228,10 +247,16 @@ def main():
     ap.add_argument("--an-err", type=float, default=0.55)
     ap.add_argument("--fields", default=None)
     ap.add_argument("--bandwidth-sd", type=float, default=0.6)
+    ap.add_argument("--archive-windows", type=int, default=1)
+    ap.add_argument("--tail-rate-max", type=float, default=0.0)
+    ap.add_argument("--tail-sigma-floor", type=float, default=0.0)
     a = ap.parse_args()
     run_loop(a.members, a.iters, a.seed, a.eps, a.outer, a.ctcheck,
              a.refresh, a.an_err, fields=a.fields,
-             bandwidth_sd=a.bandwidth_sd)
+             bandwidth_sd=a.bandwidth_sd,
+             archive_windows=a.archive_windows,
+             tail_rate_max=a.tail_rate_max,
+             tail_sigma_floor=a.tail_sigma_floor)
 
 
 if __name__ == "__main__":
