@@ -361,25 +361,33 @@ B. ROUGHNESS-WEIGHTS SPIRAL: adaptive estimates are rough exactly
      loop amplified it into visibly different trajectories by it1.
      Loop-level claims require seed replication; single-trajectory
      comparisons are draws.
-- NEXT SESSION OPENS WITH: ONE JEDI confirmation run of the certified
-  remedy -- rung-2 configuration plus --tail-rate-max 1.3
-  --tail-sigma-floor 0.1 (needs the updated phase3_cycle.py and
-  stage_c_smoothing.py on the VM). Then the mode-window sweep in the
+  7. JEDI CONFIRMATION RUN (real system, closes the drift arc): rung-2
+     configuration plus --tail-rate-max 1.3 --tail-sigma-floor 0.1
+     (--pff-outer 210 --pff-ctcheck 999; the budget flags are REQUIRED
+     -- without them the stock 21-iteration budget is transport-starved
+     at N=40: sd ~2.3, flow norm 64-68 percent, every export refused,
+     the loop never engages). With the budget: 8/8 exports accepted,
+     zero refusals, L1 0.119 0.226 0.190 0.202 0.236 0.284 0.209
+     0.187, trailing-3 0.227, ESS 24-33, flow norm 0-4 percent every
+     cycle -- inside the mirror's replication band (0.140/0.293/0.173
+     at seeds 7/11/21) and under the stock settle of 0.33-0.42. The
+     mirror's prediction transferred to real JEDI unchanged. Rows in
+     the VM's phase3_table.log (second RUN block).
+- NEXT SESSION OPENS WITH: the mode-window sweep in the
   calibrated mirror (the structural core deficit; untouched). The
   extractor extension for per-iteration density npz is DEMOTED: the
   drift reproduced offline without it. Still queued: merge
   pff-norm-fix (fd90c9da) into nongaussian-costjo (trunk still
   carries the catapult); the Chih-Chi memo (AdaGrad + transport law,
   both dimensions + catapult + N=100 stiffness event).
-- HOUSEKEEPING: Mac and GitHub diverged -- Mac holds unpushed de56e1c
-  + f76cd38 (the two share a commit message; one looks accidental),
-  GitHub holds 44c5501 (vm_data npz, pushed from the VM). git pull
-  --rebase on the Mac, then push. New files this session (container
-  origin, delivered in the bundle): jedi_export/diag_it1_fingerprint
-  .py, diag_tail_dial.py, diag_tail_remedy.py; modified:
-  jedi_export/l95_mirror.py (archive_windows + tail-guard knobs),
-  jedi_export/phase3_cycle.py, l95-testbed/stage_c_smoothing.py
-  (apply_tail_guards).
+- HOUSEKEEPING: Mac/GitHub divergence RESOLVED (rebased and pushed;
+  d016492 carries the bundle). Repo cleanup applied after the
+  confirmation: .gitignore added (__pycache__, .DS_Store, .pyc),
+  tracked cache files and the bundle's README_BUNDLE.txt /
+  HANDOFF_STAGE_C_UPDATE.md / tail_guards_tracked.patch /
+  _junction.patch removed from tracking; the per-iteration
+  columns-available dump in phase3_cycle.py removed (the failure path
+  still names the columns).
 
 
 ## Tooling notes

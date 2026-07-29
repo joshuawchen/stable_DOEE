@@ -150,7 +150,6 @@ def collect_oman(a, it):
             raise SystemExit(
                 f"no oman column in {path}; columns: {names}")
         deps.append(np.array([float(r[3 + cand[-1]]) for r in rows]))
-    print(f"    [it {it}] columns available: {names_seen}")
     return np.column_stack(deps)          # n_obs x members
 
 

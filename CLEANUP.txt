@@ -1,0 +1,15 @@
+Unpack over the repo root (Mac), then from the repo root:
+
+  git rm -r --cached __pycache__ jedi_export/__pycache__ l95-testbed/__pycache__
+  git rm --cached .DS_Store _junction.patch README_BUNDLE.txt \
+      HANDOFF_STAGE_C_UPDATE.md tail_guards_tracked.patch
+  rm README_BUNDLE.txt HANDOFF_STAGE_C_UPDATE.md tail_guards_tracked.patch
+  git add -A
+  git commit -m "Confirmation run pinned; repo cleanup"
+  git push
+
+Then on the VM: git pull (brings the quieter driver + updated handoff).
+Contents: .gitignore (new); jedi_export/phase3_cycle.py (column dump
+removed; driver test suite ALL PASS); l95-testbed/HANDOFF_STAGE_C.md
+(JEDI confirmation row pinned, queue and housekeeping updated).
+_junction.patch: kept on disk untracked -- delete it too if it is stale.
