@@ -302,7 +302,10 @@ def estimate_from_histograms(grid, f_d, f_k, lam=None, lam_grid=None,
                       f"lambda = {lam:.3e} (resolvability {ratio:.2f})")
 
     pi = _solve(Eta, np.asarray(f_d, float), dx, n, lam, n_irls=n_irls)
-    return _make_cache(grid, pi, dx, lam, ratio, trim_log)
+    pi, n_filled = _fill_zero_bins(pi, dx)
+    xg, pin, cache = _make_cache(grid, pi, dx, lam, ratio, trim_log)
+    cache["zero_bins_filled"] = n_filled
+    return xg, pin, cache
 
 
 # ---------------------------------------------------------------------------
@@ -952,7 +955,9 @@ def estimate_adaptive(grid, f_d, f_k, innov, groups, seed=0, n_irls=3,
     # estimate: a genuinely multimodal recovery must not be silently
     # truncated to its tallest mode -- measured, the truncation cost a
     # bimodal truth its entire second mode and 70% of its variance.
+    best_pi, n_filled = _fill_zero_bins(best_pi, dx)
     _, _, cache = _make_cache(grid, best_pi, dx, chosen, ratio, trim_log)
+    cache["zero_bins_filled"] = n_filled
     if select == "cv" and mu_grid is None:
         cache["mu_argmin"] = mu_argmin
     cache["chi2_ratio"] = chi2[chosen] / max(n - dofs[chosen], 1.0)
@@ -980,6 +985,45 @@ def _hist_var(grid, f):
     f = np.asarray(f, float)
     m = float((f * grid).sum() * dx)
     return float((f * (grid - m) ** 2).sum() * dx)
+
+
+def _fill_zero_bins(pi, dx, max_gap=3):
+    """Fill EXACT-ZERO bins inside the support of pi by linear interpolation
+    of log pi from the nearest positive bins on each side, for gaps of at
+    most max_gap bins, then renormalize to unit mass. Returns (pi, n_filled).
+
+    The QP is constrained pi >= 0 and quadprog's active set puts exact
+    zeros where a noisy data term pushes a bin negative. The reweighted
+    third-difference penalty on log pi cannot itself reach zero, but the
+    active set can, and three IRLS passes do not undo it. An exact zero
+    inside the support is a solver boundary artifact, not a claim that the
+    density vanishes: measured on cycled-filter archives (2026-09-02),
+    isolated zero bins at 1.5 to 6 widths from the center inside the
+    mass-carrying run caught 0.5 to 1.5 percent of the true errors of a
+    channel, each at log(1e-300) = -690 nats once the export interpolated
+    log pi across the bin, adding 2 to 6 nats per channel to the KL of a
+    density whose width and kept mass both passed. Leading and trailing
+    zeros, outside the outermost positive bins, are the support edge and
+    are left alone; the export's tails take over there. Gaps longer than
+    max_gap are left alone too: a body separated from far outlier lobes by
+    a long run of zeros is a genuine gap, and bridging it in log space
+    moves mass into it (measured: the self-test's outlier case, T sd 0.82).
+    """
+    pi = np.asarray(pi, float).copy()
+    pos = np.flatnonzero(pi > 0.0)
+    if pos.size < 2:
+        return pi, 0
+    gaps = np.diff(pos) - 1
+    hole = np.zeros(pi.size, bool)
+    for a, g in zip(pos[:-1], gaps):
+        if 0 < g <= max_gap:
+            hole[a + 1:a + 1 + g] = True
+    n_filled = int(hole.sum())
+    if n_filled:
+        ii = np.arange(pi.size)
+        pi[hole] = np.exp(np.interp(ii[hole], ii[pi > 0], np.log(pi[pi > 0])))
+        pi /= pi.sum() * dx
+    return pi, n_filled
 
 
 def _make_cache(x_grid, pi, dx, lam, ratio, trim_log):
@@ -1219,6 +1263,7 @@ def estimate_noise_pmf_reg(X, Y, n_members, lam=None, lam_grid=None, folds=4,
                   f"chosen ({rule}) = {lam:.3e}")
 
     pi = _solve(Eta, f_d, dx, n, lam, n_irls=n_irls)
+    pi, n_filled = _fill_zero_bins(pi, dx)
 
     # trim to a numerically stable interior, far less aggressively than before
     logp = np.log(pi + 1e-300)
@@ -1245,7 +1290,8 @@ def estimate_noise_pmf_reg(X, Y, n_members, lam=None, lam_grid=None, folds=4,
              "right_log_slope": slopes[-1], "right_log_int": intercepts[-1],
              "right_dd": (slopes[-1] - slopes[-2]) / dx,
              "lambda": lam, "resolvability": ratio,
-             "kept_mass": float(pin.sum() * dx)}
+             "kept_mass": float(pin.sum() * dx),
+             "zero_bins_filled": n_filled}
     if ratio < 0.5:
         import warnings as _w
         _w.warn(f"observation error is only {ratio:.2f} of the background "
