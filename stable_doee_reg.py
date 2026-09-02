@@ -1007,7 +1007,20 @@ def _fill_zero_bins(pi, dx, max_gap=3):
     are left alone; the export's tails take over there. Gaps longer than
     max_gap are left alone too: a body separated from far outlier lobes by
     a long run of zeros is a genuine gap, and bridging it in log space
-    moves mass into it (measured: the self-test's outlier case, T sd 0.82).
+    moves mass into it.
+
+    The fill also recovers tail WEIGHT that the zeros were destroying.
+    validate_doee_variants, same seeds, without and with it:
+
+        case              exkurt before   after    truth
+        heavy 85/15           +1.37       +2.67    +7.22
+        very heavy 95/5       +3.73      +11.40   +21.58
+        laplace 0.8           +1.56       +2.48    +2.75
+
+    with total L1 unchanged (1.217 against 1.221). A zero bin in a tail
+    costs that bin's fourth moment outright, and the tails are where the
+    fourth moment lives, so the estimator was reporting less kurtosis than
+    it had found.
     """
     pi = np.asarray(pi, float).copy()
     pos = np.flatnonzero(pi > 0.0)
