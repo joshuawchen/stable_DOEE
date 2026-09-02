@@ -1,0 +1,73 @@
+diff --git a/src/oops/assimilation/PFF.h b/src/oops/assimilation/PFF.h
+index a99a2263..e621322b 100644
+--- a/src/oops/assimilation/PFF.h
++++ b/src/oops/assimilation/PFF.h
+@@ -120,8 +120,8 @@ PFF<MODEL, OBS>::doMinimize(const eckit::Configuration & config) {
+   CtrlInc_ rrOther(J_.jb().getFirstGuess());
+   CtrlInc_ zz(J_.jb());
+ 
+-  J_.computeGradientFG(rr);
+-  J_.jb().addGradientFG(rr, *gradJb_);
++  J_.computeGradientFG(rr);  // Jo-only gradient at the CURRENT position
++  // (no addGradientFG: the prior score enters once, explicitly, below)
+ 
+ // Communicator and MPI parameters:
+   const eckit::mpi::Comm & comm = oops::mpi::world();
+@@ -131,13 +131,18 @@ PFF<MODEL, OBS>::doMinimize(const eckit::Configuration & config) {
+   Log::info() << "Running the PFF algorithm with " << nmembers_ << " particles" << std::endl;
+ 
+ // Other useful terms
+-  CtrlVar_ xx(J_.jb().getBackground());  // get initial state
++  CtrlVar_ xx(J_.jb().getBackground());  // static background (prior member)
+   CtrlVar_ xxOther(xx);  // to use when receiving
+   CtrlVar_ xxMean(xx);
+ 
+-  computeMean(xx, xxOther, xxMean, comm);
++  computeMean(xx, xxOther, xxMean, comm);  // FIXED prior-member mean
++  // current particle position = background + accumulated first-guess
++  // increment: the kernel, the repulsion, and the prior anchor follow
++  // the MOVING particles (Hu & van Leeuwen 2021), not the backgrounds
++  CtrlVar_ xxCur(xx);
++  J_.addIncrement(xxCur, J_.jb().getFirstGuess());
+   diagonalsOfB(B, standardDev);
+-  dxi(*dx, xx, xxOther, xxMean, B, rr, rrOther, comm);
++  dxi(*dx, xxCur, xxOther, xxMean, B, rr, rrOther, comm);
+ 
+   Log::info() << classname() << " output increment" << *dx << std::endl;
+ 
+@@ -227,7 +232,8 @@ void PFF<MODEL, OBS>::dxi(CtrlInc_ & dx, const CtrlVar_ & xxlocal, CtrlVar_ & xx
+       diffState.diff(xxlocal, xxother);  // x_i - x_j type CtrlInc_
+       kernelNN = kernel(xxlocal, xxother);
+       // K(x_i, x_j)o[BH^{T}R^{-1}o[ (y_j - H(x_j)) + (x_j - \mean(x)) ]
+-      // - B o diag(B^{-1})o(x_i-x_j)oK(x_i, x_j)
++      // + (x_i-x_j)oK(x_i, x_j)/alpha : repulsion, grad_{x_j} K
++      // (B o grad_{x_j} K with h^2 = alpha*B; the B cancels)
+ 
+       B.multiply(rrother, gradLogPostK);  // B * rr = BH^T R^{-1} (y_j - H(x_j))
+       gradLogPostK *= inflationFactor_;
+@@ -239,7 +245,7 @@ void PFF<MODEL, OBS>::dxi(CtrlInc_ & dx, const CtrlVar_ & xxlocal, CtrlVar_ & xx
+       diffState.schur_product_with(kernelNN);
+       diffState *= 1/alpha;
+       diffState *= inflationFactor_;
+-      gradLogPostK -= diffState;
++      gradLogPostK += diffState;  // repulsion pushes x_i AWAY from x_j
+ 
+     } else {
+       kernelNN = kernel(xxlocal, xxlocal);  // kernel
+@@ -282,6 +288,7 @@ void PFF<MODEL, OBS>::dxi(CtrlInc_ & dx, const CtrlVar_ & xxlocal, CtrlVar_ & xx
+   } else if (ct_ >= ctCheck_ && iter_ >= 1 && norms[2] <= 1.02*norms[1]) {
+     ct_ = 0;
+     dxij *= (eps_ * 1.5);
++    dx = dxij;
+   } else {
+     dxij *= eps_;
+     dx = dxij;
+@@ -297,8 +304,6 @@ void PFF<MODEL, OBS>::dxi(CtrlInc_ & dx, const CtrlVar_ & xxlocal, CtrlVar_ & xx
+               << norms[2] << "]" << std::endl;
+ 
+   norms[1] = norms[2];
+-
+-  dx = dxij;
+ }
+ 
+ // -----------------------------------------------------------------------------------
